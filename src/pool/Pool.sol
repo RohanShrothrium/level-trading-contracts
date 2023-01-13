@@ -32,6 +32,12 @@ import {
 import {PoolErrors} from "./PoolErrors.sol";
 import {IPoolHook} from "../interfaces/IPoolHook.sol";
 
+uint256 constant USD_VALUE_DECIMAL = 30;
+
+interface IDecimalsErc20 {
+    function decimals() external view returns (uint256);
+}
+
 struct IncreasePositionVars {
     uint256 reserveAdded;
     uint256 collateralAmount;
@@ -235,12 +241,12 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
         _requireValidTokenPair(_indexToken, _collateralToken, _side, true);
         IncreasePositionVars memory vars;
         vars.collateralAmount = _requireAmount(_getAmountIn(_collateralToken));
-        uint256 collateralPrice = _getPrice(_collateralToken, false);
+        uint256 collateralPrice = _getCollateralPrice(_collateralToken, true);
         vars.collateralValueAdded = collateralPrice * vars.collateralAmount;
         uint256 borrowIndex = _accrueInterest(_collateralToken);
         bytes32 key = _getPositionKey(_owner, _indexToken, _collateralToken, _side);
         Position memory position = positions[key];
-        vars.indexPrice = _getPrice(_indexToken, _side, true);
+        vars.indexPrice = _getIndexPrice(_indexToken, _side, true);
         vars.sizeChanged = _sizeChanged;
 
         // update position
@@ -377,7 +383,7 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
 
         bytes32 key = _getPositionKey(_account, _indexToken, _collateralToken, _side);
         Position memory position = positions[key];
-        uint256 markPrice = _getPrice(_indexToken, _side, false);
+        uint256 markPrice = _getIndexPrice(_indexToken, _side, false);
         if (!_liquidatePositionAllowed(position, _side, markPrice, borrowIndex)) {
             revert PoolErrors.PositionNotLiquidated(key);
         }
@@ -657,7 +663,7 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
 
         uint256 poolValue = _getTrancheValue(_tranche, true);
         uint256 lpSupply = ILPToken(_tranche).totalSupply();
-        if (lpSupply & poolValue == 0) {
+        if (lpSupply == 0 || poolValue == 0) {
             lpAmount = MathUtils.frac(userAmount, tokenPrice, LP_INITIAL_PRICE);
         } else {
             lpAmount = (userAmount * tokenPrice * lpSupply) / poolValue;
@@ -805,7 +811,7 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
         PoolTokenInfo memory tokenInfo = poolTokens[_token];
         AssetInfo memory asset = _getPoolAsset(_token);
         uint256 _now = block.timestamp;
-        if (tokenInfo.lastAccrualTimestamp & asset.poolAmount == 0) {
+        if (tokenInfo.lastAccrualTimestamp == 0 || asset.poolAmount == 0) {
             tokenInfo.lastAccrualTimestamp = (_now / accrualInterval) * accrualInterval;
         } else {
             uint256 nInterval = (_now - tokenInfo.lastAccrualTimestamp) / accrualInterval;
@@ -921,10 +927,7 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
         returns (SignedInt memory aum)
     {
         uint256 averageShortPrice = averageShortPrices[_tranche][_token];
-        SignedInt memory shortPnl = _asset.totalShortSize == 0
-            ? SignedIntOps.wrap(uint256(0))
-            : SignedIntOps.wrap(averageShortPrice).sub(_price).mul(_asset.totalShortSize).div(averageShortPrice);
-
+        SignedInt memory shortPnl = PositionUtils.calcPnl(Side.SHORT, _asset.totalShortSize, averageShortPrice, _price);
         aum = SignedIntOps.wrap(_asset.poolAmount).sub(_asset.reservedAmount).mul(_price).add(_asset.guaranteedValue);
         aum = aum.sub(shortPnl);
     }
@@ -1200,8 +1203,8 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
             ? _position.collateralValue
             : _collateralChanged;
 
-        vars.indexPrice = _getPrice(_indexToken, _side, false);
-        vars.collateralPrice = _getPrice(_collateralToken, false);
+        vars.indexPrice = _getIndexPrice(_indexToken, _side, false);
+        vars.collateralPrice = _getCollateralPrice(_collateralToken, false);
 
         uint256 borrowIndex = poolTokens[_collateralToken].borrowIndex;
 
@@ -1244,10 +1247,17 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
         feeValue = borrowFee + positionFee;
     }
 
-    function _getPrice(address _token, Side _side, bool _isIncrease) internal view returns (uint256) {
+    function _getIndexPrice(address _token, Side _side, bool _isIncrease) internal view returns (uint256) {
         // max == (_isIncrease & _side = LONG) | (!_increase & _side = SHORT)
         // max = _isIncrease == (_side == Side.LONG);
         return _getPrice(_token, _isIncrease == (_side == Side.LONG));
+    }
+
+    function _getCollateralPrice(address _token, bool _isIncrease) internal view returns (uint256) {
+        return (isStableCoin[_token])
+            // force collateral price = 1 incase of using stablecoin as collateral
+            ? 10 ** (USD_VALUE_DECIMAL - IDecimalsErc20(_token).decimals())
+            : _getPrice(_token, !_isIncrease);
     }
 
     function _getPrice(address _token, bool _max) internal view returns (uint256) {
