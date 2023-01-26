@@ -242,7 +242,7 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
 
         _safeTransferETH(order.owner, order.executionFee);
         if (request.updateType == UpdatePositionType.INCREASE) {
-            IERC20(order.collateralToken).safeTransfer(order.owner, request.collateral);
+            _refundCollateral(order.collateralToken, request.collateral, order.owner);
         }
 
         emit OrderCancelled(_orderId);
@@ -446,7 +446,15 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
 
         _safeTransferETH(_order.owner, _order.executionFee);
         if (request.updateType == UpdatePositionType.INCREASE) {
-            IERC20(_order.collateralToken).safeTransfer(_order.owner, request.collateral);
+            _refundCollateral(_order.collateralToken, request.collateral, _order.owner);
+        }
+    }
+
+    function _refundCollateral(address _collateralToken, uint256 _amount, address _orderOwner) internal {
+        if (_collateralToken == address(weth)) {
+            _safeUnwrapETH(_amount, _orderOwner);
+        } else {
+            IERC20(_collateralToken).safeTransfer(_orderOwner, _amount);
         }
     }
 

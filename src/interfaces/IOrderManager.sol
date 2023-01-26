@@ -32,4 +32,8 @@ interface IOrderManager {
     function orders(uint256 id) external view returns (Order memory);
 
     function swapOrders(uint256 id) external view returns (SwapOrder memory);
+
+    function executeOrder(uint256 _key, address payable _feeTo) external;
+
+    function executeSwapOrder(uint256 _orderId, address payable _feeTo) external;
 }

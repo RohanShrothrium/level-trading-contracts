@@ -30,9 +30,6 @@ contract OrderHook is IOrderHook {
         Order memory order = IOrderManager(orderManager).orders(orderId);
         address trader = order.owner;
         address referrer = abi.decode(extradata, (address));
-        if (referrer != address(0)) {
-            referralController.setReferrer(trader, referrer);
-        }
     }
 
     function postPlaceSwapOrder(uint256 swapOrderId, bytes calldata extradata) external onlyOrderManager {
@@ -42,9 +39,6 @@ contract OrderHook is IOrderHook {
         SwapOrder memory order = IOrderManager(orderManager).swapOrders(swapOrderId);
         address trader = order.owner;
         address referrer = abi.decode(extradata, (address));
-        if (referrer != address(0)) {
-            referralController.setReferrer(trader, referrer);
-        }
     }
 
     function validateSender() internal view {

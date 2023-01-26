@@ -133,5 +133,7 @@ abstract contract PoolStorage {
 
     uint256 public addRemoveLiquidityFee;
 
-    mapping(address => mapping(address => uint)) public averageShortPrices;
+    mapping(address => mapping(address => uint256)) public averageShortPrices;
+    /// @notice cached pool value for faster computation
+    uint256 public virtualPoolValue;
 }

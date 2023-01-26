@@ -13,7 +13,7 @@ library PositionUtils {
         pure
         returns (SignedInt memory)
     {
-        if (_positionSize == 0) {
+        if (_positionSize == 0 || _entryPrice == 0) {
             return SignedIntOps.wrap(uint256(0));
         }
         if (_side == Side.LONG) {

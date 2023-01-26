@@ -4,7 +4,9 @@ pragma solidity 0.8.15;
 
 import {OwnableUpgradeable} from "openzeppelin-upgradeable/access/OwnableUpgradeable.sol";
 import {ReentrancyGuardUpgradeable} from "openzeppelin-upgradeable/security/ReentrancyGuardUpgradeable.sol";
-import {SafeERC20, IERC20} from "openzeppelin/token/ERC20/utils/SafeERC20.sol";
+import {SafeERC20} from "openzeppelin/token/ERC20/utils/SafeERC20.sol";
+import {IERC20Metadata} from "openzeppelin/interfaces/IERC20Metadata.sol";
+import {IERC20} from "openzeppelin/interfaces/IERC20.sol";
 import {Initializable} from "openzeppelin-upgradeable/proxy/utils/Initializable.sol";
 import {SignedInt, SignedIntOps} from "../lib/SignedInt.sol";
 import {MathUtils} from "../lib/MathUtils.sol";
@@ -33,10 +35,6 @@ import {PoolErrors} from "./PoolErrors.sol";
 import {IPoolHook} from "../interfaces/IPoolHook.sol";
 
 uint256 constant USD_VALUE_DECIMAL = 30;
-
-interface IDecimalsErc20 {
-    function decimals() external view returns (uint256);
-}
 
 struct IncreasePositionVars {
     uint256 reserveAdded;
@@ -171,6 +169,7 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
 
         poolTokens[_token].feeReserve += daoFee;
         trancheAssets[_tranche][_token].poolAmount += amountInAfterFee;
+        refreshVirtualPoolValue();
 
         ILPToken(_tranche).mint(_to, lpAmount);
         emit LiquidityAdded(_tranche, msg.sender, _token, _amountIn, lpAmount, daoFee);
@@ -199,9 +198,11 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
 
         poolTokens[_tokenOut].feeReserve += daoFee;
         _decreaseTranchePoolAmount(_tranche, _tokenOut, outAmountAfterFee);
+        refreshVirtualPoolValue();
 
         lpToken.burnFrom(msg.sender, _lpAmount);
         _doTransferOut(_tokenOut, _to, outAmountAfterFee);
+
         emit LiquidityRemoved(_tranche, msg.sender, _tokenOut, _lpAmount, outAmountAfterFee, daoFee);
     }
 
@@ -227,7 +228,7 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
         _doTransferOut(_tokenOut, _to, amountOutAfterFee);
         emit Swap(msg.sender, _tokenIn, _tokenOut, amountIn, amountOutAfterFee, swapFee);
         if (address(poolHook) != address(0)) {
-            poolHook.postSwap(_to, _tokenIn, _tokenOut, abi.encode(amountIn, amountOutAfterFee, extradata));
+            poolHook.postSwap(_to, _tokenIn, _tokenOut, abi.encode(amountIn, amountOutAfterFee, swapFee, extradata));
         }
     }
 
@@ -297,7 +298,11 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
 
         if (address(poolHook) != address(0)) {
             poolHook.postIncreasePosition(
-                _owner, _indexToken, _collateralToken, _side, abi.encode(_sizeChanged, vars.collateralValueAdded)
+                _owner,
+                _indexToken,
+                _collateralToken,
+                _side,
+                abi.encode(_sizeChanged, vars.collateralValueAdded, vars.feeValue)
             );
         }
     }
@@ -372,7 +377,11 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
 
         if (address(poolHook) != address(0)) {
             poolHook.postDecreasePosition(
-                _owner, _indexToken, _collateralToken, _side, abi.encode(vars.sizeChanged, vars.collateralReduced)
+                _owner,
+                _indexToken,
+                _collateralToken,
+                _side,
+                abi.encode(vars.sizeChanged, vars.collateralReduced, vars.feeValue)
             );
         }
     }
@@ -419,6 +428,10 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
                 _account, _indexToken, _collateralToken, _side, abi.encode(position.size, position.collateralValue)
             );
         }
+    }
+
+    function refreshVirtualPoolValue() public {
+        virtualPoolValue = (_getPoolValue(true) + _getPoolValue(false)) / 2;
     }
 
     // ========= ADMIN FUNCTIONS ========
@@ -837,11 +850,10 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
         view
         returns (uint256)
     {
-        uint256 poolValue = _getPoolValue(_isSwapIn);
         (uint256 baseSwapFee, uint256 taxBasisPoint) = isStableCoin[_token]
             ? (fee.stableCoinBaseSwapFee, fee.stableCoinTaxBasisPoint)
             : (fee.baseSwapFee, fee.taxBasisPoint);
-        return _calcFeeRate(poolValue, _token, _tokenPrice, _valueChange, baseSwapFee, taxBasisPoint, _isSwapIn);
+        return _calcFeeRate(_token, _tokenPrice, _valueChange, baseSwapFee, taxBasisPoint, _isSwapIn);
     }
 
     function _calcAddRemoveLPFee(address _token, uint256 _tokenPrice, uint256 _valueChange, bool _isAdd)
@@ -849,13 +861,10 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
         view
         returns (uint256)
     {
-        return _calcFeeRate(
-            _getPoolValue(_isAdd), _token, _tokenPrice, _valueChange, addRemoveLiquidityFee, fee.taxBasisPoint, _isAdd
-        );
+        return _calcFeeRate(_token, _tokenPrice, _valueChange, addRemoveLiquidityFee, fee.taxBasisPoint, _isAdd);
     }
 
     function _calcFeeRate(
-        uint256 _poolValue,
         address _token,
         uint256 _tokenPrice,
         uint256 _valueChange,
@@ -863,7 +872,7 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
         uint256 _taxBasisPoint,
         bool _isIncrease
     ) internal view returns (uint256) {
-        uint256 _targetValue = totalWeight == 0 ? 0 : (targetWeights[_token] * _poolValue) / totalWeight;
+        uint256 _targetValue = totalWeight == 0 ? 0 : (targetWeights[_token] * virtualPoolValue) / totalWeight;
         if (_targetValue == 0) {
             return _baseFee;
         }
@@ -1151,14 +1160,7 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
     function _rebalanceTranches(address _tokenIn, uint256 _amountIn, address _tokenOut, uint256 _amountOut) internal {
         // amount devided to each tranche
         uint256[] memory outAmounts;
-
-        if (!isStableCoin[_tokenIn] && isStableCoin[_tokenOut]) {
-            // use token in as index
-            outAmounts = _calcTrancheSharesAmount(_tokenIn, _tokenOut, _amountOut, false);
-        } else {
-            // use token out as index
-            outAmounts = _calcTrancheSharesAmount(_tokenOut, _tokenOut, _amountOut, false);
-        }
+        outAmounts = _calcTrancheSharesAmount(_tokenIn, _tokenOut, _amountOut, false);
 
         for (uint256 i = 0; i < allTranches.length;) {
             address tranche = allTranches[i];
@@ -1199,7 +1201,7 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
     ) internal view returns (DecreasePositionVars memory vars) {
         // clean user input
         vars.sizeChanged = MathUtils.min(_position.size, _sizeChanged);
-        vars.collateralReduced = _position.collateralValue < _collateralChanged || _position.size == _sizeChanged
+        vars.collateralReduced = _position.collateralValue < _collateralChanged || _position.size == vars.sizeChanged
             ? _position.collateralValue
             : _collateralChanged;
 
@@ -1256,7 +1258,7 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
     function _getCollateralPrice(address _token, bool _isIncrease) internal view returns (uint256) {
         return (isStableCoin[_token])
             // force collateral price = 1 incase of using stablecoin as collateral
-            ? 10 ** (USD_VALUE_DECIMAL - IDecimalsErc20(_token).decimals())
+            ? 10 ** (USD_VALUE_DECIMAL - IERC20Metadata(_token).decimals())
             : _getPrice(_token, !_isIncrease);
     }
 

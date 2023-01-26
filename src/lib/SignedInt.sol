@@ -70,7 +70,7 @@ library SignedIntOps {
     }
 
     function toUint(SignedInt memory a) internal pure returns (uint256) {
-        require(a.sig == POS, "SignedInt: below zero");
+        require(a.abs == 0 || a.sig == POS, "SignedInt: below zero");
         return a.abs;
     }
 
