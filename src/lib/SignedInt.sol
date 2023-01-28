@@ -46,7 +46,7 @@ library SignedIntOps {
     function div(SignedInt memory a, SignedInt memory b) internal pure returns (SignedInt memory) {
         uint256 sig = (a.sig + b.sig + 1) % 2;
         uint256 abs = a.abs / b.abs;
-        return SignedInt(sig, abs);
+        return SignedInt(abs == 0 ? POS : sig, abs); // zero is alway positive
     }
 
     function add(SignedInt memory a, uint256 b) internal pure returns (SignedInt memory) {
@@ -70,7 +70,8 @@ library SignedIntOps {
     }
 
     function toUint(SignedInt memory a) internal pure returns (uint256) {
-        require(a.abs == 0 || a.sig == POS, "SignedInt: below zero");
+        if (a.abs == 0) return 0;
+        require(a.sig == POS, "SignedInt: below zero");
         return a.abs;
     }
 
