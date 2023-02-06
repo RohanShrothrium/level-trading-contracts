@@ -3,16 +3,16 @@
 pragma solidity 0.8.15;
 
 import "forge-std/Test.sol";
-import {Pool, TokenWeight, Side} from "../src/pool/Pool.sol";
-import {PoolAsset, PositionView, PoolLens} from "./PoolLens.sol";
+import {Pool, TokenWeight, Side} from "src/pool/Pool.sol";
+import {PoolAsset, PositionView, PoolLens} from "src/pool/PoolLens.sol";
 import {MockOracle} from "./mocks/MockOracle.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
-import {ILPToken} from "../src/interfaces/ILPToken.sol";
-import {PoolErrors} from "../src/pool/PoolErrors.sol";
-import {LPToken} from "../src/tokens/LPToken.sol";
-import {PositionUtils} from "../src/lib/PositionUtils.sol";
+import {ILPToken} from "src/interfaces/ILPToken.sol";
+import {PoolErrors} from "src/pool/PoolErrors.sol";
+import {LPToken} from "src/tokens/LPToken.sol";
+import {PositionUtils} from "src/lib/PositionUtils.sol";
 import {PoolTestFixture} from "./Fixture.sol";
-import {SignedInt, SignedIntOps} from "../src/lib/SignedInt.sol";
+import {SignedInt, SignedIntOps} from "src/lib/SignedInt.sol";
 
 contract ShortTrackingTest is PoolTestFixture {
     using SignedIntOps for SignedInt;
@@ -43,7 +43,7 @@ contract ShortTrackingTest is PoolTestFixture {
         vm.stopPrank();
     }
 
-    function testShortPosition() external {
+    function testShortPositionPnL() external {
         vm.startPrank(owner);
         pool.setPositionFee(0, 0);
         pool.setInterestRate(0, 1);
@@ -85,7 +85,7 @@ contract ShortTrackingTest is PoolTestFixture {
             console.log("global short position", poolAsset.totalShortSize, poolAsset.averageShortPrice);
             SignedInt memory globalPnL =
                 PositionUtils.calcPnl(Side.SHORT, poolAsset.totalShortSize, poolAsset.averageShortPrice, indexPrice);
-            console.log("global PnL", globalPnL.sig, globalPnL.abs);
+            console.log("global short position PnL", globalPnL.sig, globalPnL.abs);
             // allow some small rouding error
             assertTrue(diff(globalPnL.abs, totalPnL.abs, 1e18) <= 1);
         }
@@ -109,14 +109,122 @@ contract ShortTrackingTest is PoolTestFixture {
             console.log("global short position", poolAsset.totalShortSize, poolAsset.averageShortPrice);
             SignedInt memory globalPnL =
                 PositionUtils.calcPnl(Side.SHORT, poolAsset.totalShortSize, poolAsset.averageShortPrice, indexPrice);
-            console.log("global PnL", globalPnL.sig, globalPnL.abs);
+            console.log("global short position PnL", globalPnL.sig, globalPnL.abs);
             assertTrue(diff(globalPnL.abs, totalPnL.abs, 1e18) <= 1);
         }
     }
 
-    function diff(uint256 a, uint256 b, uint256 precision) internal view returns (uint256) {
+    function testLiquidateShortSlow() external {
+        vm.startPrank(owner);
+        pool.setPositionFee(1e7, 5e30);
+        pool.setInterestRate(1e5, 3600);
+        vm.stopPrank();
+        _beforeTestPosition();
+
+        // add liquidity
+        vm.startPrank(alice);
+        usdc.approve(address(router), type(uint256).max);
+        router.addLiquidity(tranche, address(usdc), 1000000e6, 0, alice);
+        vm.stopPrank();
+
+        vm.startPrank(orderManager);
+        // OPEN SHORT position with 5x leverage
+        vm.warp(1000);
+        oracle.setPrice(address(btc), 20_000e22);
+        usdc.mint(2000e6);
+
+        console.log("Initial");
+        {
+            PoolAsset memory poolAsset = lens.poolAssets(address(pool), address(btc));
+            console.log("INDEX:");
+            console.log("\tpoolAmount", poolAsset.poolAmount);
+            console.log("\treservedAmount", poolAsset.reservedAmount);
+            console.log("\tfeeReserve", poolAsset.feeReserve);
+            console.log("\tguaranteedValue", poolAsset.guaranteedValue);
+            console.log("\ttotalShortSize", poolAsset.totalShortSize);
+            console.log("\taverageShortPrice", poolAsset.averageShortPrice);
+            console.log("\tpoolBalance", poolAsset.poolBalance);
+            console.log("\tlastAccrualTimestamp", poolAsset.lastAccrualTimestamp);
+            console.log("\tborrowIndex", poolAsset.borrowIndex);
+        }
+        {
+            PoolAsset memory poolAsset = lens.poolAssets(address(pool), address(usdc));
+            console.log("COLLATERAL:");
+            console.log("\tpoolAmount", poolAsset.poolAmount);
+            console.log("\treservedAmount", poolAsset.reservedAmount);
+            console.log("\tfeeReserve", poolAsset.feeReserve);
+            console.log("\tguaranteedValue", poolAsset.guaranteedValue);
+            console.log("\ttotalShortSize", poolAsset.totalShortSize);
+            console.log("\taverageShortPrice", poolAsset.averageShortPrice);
+            console.log("\tpoolBalance", poolAsset.poolBalance);
+            console.log("\tlastAccrualTimestamp", poolAsset.lastAccrualTimestamp);
+            console.log("\tborrowIndex", poolAsset.borrowIndex);
+        }
+
+        usdc.transfer(address(pool), 2000e6); // 0.1BTC = 2_000$
+        pool.increasePosition(alice, address(btc), address(usdc), 10_000e30, Side.SHORT);
+
+        vm.warp(9200);
+        oracle.setPrice(address(btc), 200_000e22);
+        console.log("Before liquidate");
+        {
+            PoolAsset memory poolAsset = lens.poolAssets(address(pool), address(btc));
+            console.log("INDEX:");
+            console.log("\tpoolAmount", poolAsset.poolAmount);
+            console.log("\treservedAmount", poolAsset.reservedAmount);
+            console.log("\tfeeReserve", poolAsset.feeReserve);
+            console.log("\tguaranteedValue", poolAsset.guaranteedValue);
+            console.log("\ttotalShortSize", poolAsset.totalShortSize);
+            console.log("\taverageShortPrice", poolAsset.averageShortPrice);
+            console.log("\tpoolBalance", poolAsset.poolBalance);
+            console.log("\tlastAccrualTimestamp", poolAsset.lastAccrualTimestamp);
+            console.log("\tborrowIndex", poolAsset.borrowIndex);
+        }
+        {
+            PoolAsset memory poolAsset = lens.poolAssets(address(pool), address(usdc));
+            console.log("COLLATERAL:");
+            console.log("\tpoolAmount", poolAsset.poolAmount);
+            console.log("\treservedAmount", poolAsset.reservedAmount);
+            console.log("\tfeeReserve", poolAsset.feeReserve);
+            console.log("\tguaranteedValue", poolAsset.guaranteedValue);
+            console.log("\ttotalShortSize", poolAsset.totalShortSize);
+            console.log("\taverageShortPrice", poolAsset.averageShortPrice);
+            console.log("\tpoolBalance", poolAsset.poolBalance);
+            console.log("\tlastAccrualTimestamp", poolAsset.lastAccrualTimestamp);
+            console.log("\tborrowIndex", poolAsset.borrowIndex);
+        }
+        pool.liquidatePosition(alice, address(btc), address(usdc), Side.SHORT);
+        console.log("After liquidate");
+        {
+            PoolAsset memory poolAsset = lens.poolAssets(address(pool), address(btc));
+            console.log("INDEX:");
+            console.log("\tpoolAmount", poolAsset.poolAmount);
+            console.log("\treservedAmount", poolAsset.reservedAmount);
+            console.log("\tfeeReserve", poolAsset.feeReserve);
+            console.log("\tguaranteedValue", poolAsset.guaranteedValue);
+            console.log("\ttotalShortSize", poolAsset.totalShortSize);
+            console.log("\taverageShortPrice", poolAsset.averageShortPrice);
+            console.log("\tpoolBalance", poolAsset.poolBalance);
+            console.log("\tlastAccrualTimestamp", poolAsset.lastAccrualTimestamp);
+            console.log("\tborrowIndex", poolAsset.borrowIndex);
+        }
+        {
+            PoolAsset memory poolAsset = lens.poolAssets(address(pool), address(usdc));
+            console.log("COLLATERAL:");
+            console.log("\tpoolAmount", poolAsset.poolAmount);
+            console.log("\treservedAmount", poolAsset.reservedAmount);
+            console.log("\tfeeReserve", poolAsset.feeReserve);
+            console.log("\tguaranteedValue", poolAsset.guaranteedValue);
+            console.log("\ttotalShortSize", poolAsset.totalShortSize);
+            console.log("\taverageShortPrice", poolAsset.averageShortPrice);
+            console.log("\tpoolBalance", poolAsset.poolBalance);
+            console.log("\tlastAccrualTimestamp", poolAsset.lastAccrualTimestamp);
+            console.log("\tborrowIndex", poolAsset.borrowIndex);
+        }
+    }
+
+    function diff(uint256 a, uint256 b, uint256 precision) internal pure returns (uint256) {
         uint256 sub = a > b ? a - b : b - a;
-        console.log( sub * precision / b);
         return sub * precision / b;
     }
 }

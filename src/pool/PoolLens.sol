@@ -2,11 +2,11 @@
 
 pragma solidity 0.8.15;
 
-import {PoolStorage, AssetInfo, PoolTokenInfo, Position, MAX_TRANCHES} from "../src/pool/PoolStorage.sol";
-import {Side, IPool} from "../src/interfaces/IPool.sol";
-import {SignedInt, SignedIntOps} from "../src/lib/SignedInt.sol";
-import {PositionUtils} from "../src/lib/PositionUtils.sol";
-import {ILevelOracle} from "../src/interfaces/ILevelOracle.sol";
+import {PoolStorage, AssetInfo, PoolTokenInfo, Position, MAX_TRANCHES} from "./PoolStorage.sol";
+import {Side, IPool} from "../interfaces/IPool.sol";
+import {SignedInt, SignedIntOps} from "../lib/SignedInt.sol";
+import {PositionUtils} from "../lib/PositionUtils.sol";
+import {ILevelOracle} from "../interfaces/ILevelOracle.sol";
 
 struct PositionView {
     bytes32 key;
@@ -34,6 +34,7 @@ struct PoolAsset {
 
 interface IPoolForLens is IPool {
     function getPoolAsset(address _token) external view returns (AssetInfo memory);
+    function trancheAssets(address _tranche, address _token) external view returns (AssetInfo memory);
     function getAllTranchesLength() external view returns (uint256);
     function allTranches(uint256) external view returns (address);
     function poolTokens(address) external view returns (PoolTokenInfo memory);
@@ -41,6 +42,7 @@ interface IPoolForLens is IPool {
     function oracle() external view returns (ILevelOracle);
     function getPoolValue(bool _max) external view returns (uint256);
     function getTrancheValue(address _tranche, bool _max) external view returns (uint256 sum);
+    function averageShortPrices(address _tranche, address _token) external view returns (uint256);
 }
 
 contract PoolLens {
@@ -50,12 +52,22 @@ contract PoolLens {
         IPoolForLens self = IPoolForLens(_pool);
         AssetInfo memory asset = self.getPoolAsset(_token);
         PoolTokenInfo memory tokenInfo = self.poolTokens(_token);
+        uint256 avgShortPrice;
+        uint256 nTranches = self.getAllTranchesLength();
+        for (uint256 i = 0; i < nTranches;) {
+            address tranche = self.allTranches(i);
+            uint256 shortSize = self.trancheAssets(tranche, _token).totalShortSize;
+            avgShortPrice += shortSize * self.averageShortPrices(tranche, _token);
+            unchecked {
+                ++i;
+            }
+        }
         poolAsset.poolAmount = asset.poolAmount;
         poolAsset.reservedAmount = asset.reservedAmount;
         poolAsset.guaranteedValue = asset.guaranteedValue;
         poolAsset.totalShortSize = asset.totalShortSize;
         poolAsset.feeReserve = tokenInfo.feeReserve;
-        poolAsset.averageShortPrice = tokenInfo.averageShortPrice;
+        poolAsset.averageShortPrice = asset.totalShortSize == 0 ? 0 : avgShortPrice / asset.totalShortSize;
         poolAsset.poolBalance = tokenInfo.poolBalance;
         poolAsset.lastAccrualTimestamp = tokenInfo.lastAccrualTimestamp;
         poolAsset.borrowIndex = tokenInfo.borrowIndex;
@@ -91,5 +103,34 @@ contract PoolLens {
         returns (bytes32)
     {
         return keccak256(abi.encode(_owner, _indexToken, _collateralToken, _side));
+    }
+
+    function getTrancheValue(IPoolForLens _pool, address _tranche) external view returns (uint256) {
+        return (_pool.getTrancheValue(_tranche, true) + _pool.getTrancheValue(_tranche, false)) / 2;
+    }
+
+    function getPoolValue(IPoolForLens _pool) external view returns (uint256) {
+        return (_pool.getPoolValue(true) + _pool.getPoolValue(false)) / 2;
+    }
+
+    struct PoolInfo {
+        uint256 minValue;
+        uint256 maxValue;
+        uint256[MAX_TRANCHES] tranchesMinValue;
+        uint256[MAX_TRANCHES] tranchesMaxValue;
+    }
+
+    function getPoolInfo(IPoolForLens _pool) external view returns (PoolInfo memory info) {
+        info.minValue = _pool.getPoolValue(false);
+        info.maxValue = _pool.getPoolValue(true);
+        uint256 nTranches = _pool.getAllTranchesLength();
+        for (uint256 i = 0; i < nTranches;) {
+            address tranche = _pool.allTranches(i);
+            info.tranchesMinValue[i] = _pool.getTrancheValue(tranche, false);
+            info.tranchesMaxValue[i] = _pool.getTrancheValue(tranche, true);
+            unchecked {
+                ++i;
+            }
+        }
     }
 }

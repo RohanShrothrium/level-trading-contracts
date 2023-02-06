@@ -3,7 +3,7 @@ pragma solidity 0.8.15;
 import "forge-std/Test.sol";
 
 import {Pool, TokenWeight, Side, PoolTokenInfo, AssetInfo, LP_INITIAL_PRICE} from "../src/pool/Pool.sol";
-import {PoolLens} from "./PoolLens.sol";
+import {PoolLens} from "../src/pool/PoolLens.sol";
 import {MockOracle} from "./mocks/MockOracle.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {WETH9} from "./mocks/WETH.sol";
