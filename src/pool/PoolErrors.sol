@@ -36,4 +36,6 @@ library PoolErrors {
     error MaxNumberOfTranchesReached();
     error TooManyTokenAdded(uint256 number, uint256 max);
     error AddLiquidityNotAllowed(address tranche, address token);
+    error MaxGlobalShortSizeExceeded(address token, uint256 globalShortSize);
+    error NotApplicableForStableCoin();
 }

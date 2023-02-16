@@ -136,4 +136,6 @@ abstract contract PoolStorage {
     mapping(address => mapping(address => uint256)) public averageShortPrices;
     /// @notice cached pool value for faster computation
     uint256 public virtualPoolValue;
+    /// @notice index token => max global short size
+    mapping(address => uint256) public maxGlobalShortSizes;
 }

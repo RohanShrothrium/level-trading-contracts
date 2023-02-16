@@ -135,4 +135,5 @@ interface IPool {
     event PnLDistributed(address indexed asset, address indexed tranche, uint256 amount, bool hasProfit);
     event MaintenanceMarginChanged(uint256 ratio);
     event AddRemoveLiquidityFeeSet(uint256 value);
+    event MaxGlobalShortSizeSet(address indexed token, uint256 max);
 }

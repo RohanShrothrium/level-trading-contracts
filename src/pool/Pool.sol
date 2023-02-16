@@ -610,6 +610,14 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
         emit PoolHookChanged(_hook);
     }
 
+    function setMaxGlobalShortSize(address _token, uint256 _value) external onlyOwner onlyAsset(_token) {
+        if (isStableCoin[_token]) {
+            revert PoolErrors.NotApplicableForStableCoin();
+        }
+        maxGlobalShortSizes[_token] = _value;
+        emit MaxGlobalShortSizeSet(_token, _value);
+    }
+
     // ======== internal functions =========
     function _setMaxLeverage(uint256 _maxLeverage) internal {
         if (_maxLeverage == 0) {
@@ -1018,6 +1026,7 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
             shares = _calcTrancheSharesAmount(_indexToken, _collateralToken, totalShare, true);
         }
 
+        uint256 globalShortSize = 0;
         for (uint256 i = 0; i < shares.length;) {
             address tranche = allTranches[i];
             uint256 share = shares[i];
@@ -1046,11 +1055,20 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
                 uint256 sizeChanged = MathUtils.frac(_vars.sizeChanged, share, totalShare);
                 uint256 indexPrice = _vars.indexPrice;
                 _updateGlobalShortPrice(tranche, _indexToken, sizeChanged, true, indexPrice, SignedIntOps.wrap(0));
-                indexAsset.totalShortSize += sizeChanged;
+                uint256 newTotalShortSize = indexAsset.totalShortSize + sizeChanged;
+                indexAsset.totalShortSize = newTotalShortSize;
+                globalShortSize += newTotalShortSize;
             }
             unchecked {
                 ++i;
             }
+        }
+
+        if (
+            _side == Side.SHORT && maxGlobalShortSizes[_indexToken] != 0
+                && maxGlobalShortSizes[_indexToken] < globalShortSize
+        ) {
+            revert PoolErrors.MaxGlobalShortSizeExceeded(_indexToken, globalShortSize);
         }
     }
 
