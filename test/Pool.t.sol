@@ -372,15 +372,15 @@ contract PoolTest is PoolTestFixture {
         // profit = -2000, transfer out liquidation fee
         vm.startPrank(bob);
         pool.liquidatePosition(alice, address(btc), address(btc), Side.LONG);
-        // {
-        //     PoolAsset memory asset = lens.poolAssets(address(pool), address(btc));
+        {
+            PoolAsset memory asset = lens.poolAssets(address(pool), address(btc));
 
-        //     assertEq(asset.reservedAmount, 0);
-        //     assertEq(asset.poolBalance, 109536752, "balance not update after liquidate");
-        //     assertEq(
-        //         asset.poolAmount + asset.feeReserve, asset.poolBalance, "pool amount and pool balance miss matched"
-        //     );
-        // }
+            assertEq(asset.reservedAmount, 0);
+            assertEq(asset.poolBalance, 109536752, "balance not update after liquidate");
+            assertApproxEqAbs(
+                asset.poolAmount + asset.feeReserve, asset.poolBalance, 1, "pool amount and pool balance miss matched"
+            ); // allow 1 unit of rouding error
+        }
         uint256 balance = btc.balanceOf(bob);
         assertEq(balance, 30883, "not transfer out liquidation fee"); // 5$ / 6190
         vm.stopPrank();

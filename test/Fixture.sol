@@ -12,6 +12,8 @@ import {PoolErrors} from "../src/pool/PoolErrors.sol";
 import {LiquidityRouter} from "../src/pool/LiquidityRouter.sol";
 // import {UniERC20} from "../src/lib/UniERC20.sol";
 
+uint256 constant MAX_TRANCHES = 3;
+
 contract TestPool is Pool {
     function getTrancheAsset(address tranche, address token) external view returns (AssetInfo memory) {
         return trancheAssets[tranche][token];
@@ -32,6 +34,19 @@ contract TestPool is Pool {
 
         uint256 lpSupply = ILPToken(_tranche).totalSupply();
         return lpSupply == 0 ? LP_INITIAL_PRICE : _getTrancheValue(_tranche, true) / lpSupply;
+    }
+
+    function addTranche(address _tranche) external override onlyOwner {
+        if (allTranches.length >= MAX_TRANCHES) {
+            revert PoolErrors.MaxNumberOfTranchesReached();
+        }
+        _requireAddress(_tranche);
+        if (isTranche[_tranche]) {
+            revert PoolErrors.TrancheAlreadyAdded(_tranche);
+        }
+        isTranche[_tranche] = true;
+        allTranches.push(_tranche);
+        emit TrancheAdded(_tranche);
     }
 }
 

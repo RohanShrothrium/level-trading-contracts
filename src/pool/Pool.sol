@@ -162,13 +162,13 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
         _accrueInterest(_token);
         _amountIn = _requireAmount(_transferIn(_token, _amountIn));
 
-        (uint256 amountInAfterFee, uint256 daoFee, uint256 lpAmount) = _calcAddLiquidity(_tranche, _token, _amountIn);
+        (uint256 amountInAfterDaoFee, uint256 daoFee, uint256 lpAmount) = _calcAddLiquidity(_tranche, _token, _amountIn);
         if (lpAmount < _minLpAmount) {
             revert PoolErrors.SlippageExceeded();
         }
 
         poolTokens[_token].feeReserve += daoFee;
-        trancheAssets[_tranche][_token].poolAmount += amountInAfterFee;
+        trancheAssets[_tranche][_token].poolAmount += amountInAfterDaoFee;
         refreshVirtualPoolValue();
 
         ILPToken(_tranche).mint(_to, lpAmount);
@@ -254,6 +254,7 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
         vars.feeValue = _calcPositionFee(position, vars.sizeChanged, borrowIndex);
         vars.daoFee = _calcDaoFee(vars.feeValue) / collateralPrice;
         vars.reserveAdded = vars.sizeChanged / collateralPrice;
+
         position.entryPrice = PositionUtils.calcAveragePrice(
             _side,
             position.size,
@@ -435,18 +436,8 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
     }
 
     // ========= ADMIN FUNCTIONS ========
-    function addTranche(address _tranche) external onlyOwner {
-        if (allTranches.length >= MAX_TRANCHES) {
-            revert PoolErrors.MaxNumberOfTranchesReached();
-        }
-        _requireAddress(_tranche);
-        if (isTranche[_tranche]) {
-            revert PoolErrors.TrancheAlreadyAdded(_tranche);
-        }
-        isTranche[_tranche] = true;
-        allTranches.push(_tranche);
-        emit TrancheAdded(_tranche);
-    }
+    /// @dev remove this unused function to reduce contract size
+    function addTranche(address _tranche) external virtual {}
 
     struct RiskConfig {
         address tranche;
@@ -1032,9 +1023,11 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
             uint256 share = shares[i];
             AssetInfo storage collateral = trancheAssets[tranche][_collateralToken];
 
-            uint256 reserveAmount = MathUtils.frac(_vars.reserveAdded, share, totalShare);
-            tranchePositionReserves[tranche][_key] += reserveAmount;
-            collateral.reservedAmount += reserveAmount;
+            {
+                uint256 reserveAmount = MathUtils.frac(_vars.reserveAdded, share, totalShare);
+                tranchePositionReserves[tranche][_key] += reserveAmount;
+                collateral.reservedAmount += reserveAmount;
+            }
 
             if (_side == Side.LONG) {
                 collateral.poolAmount = MathUtils.addThenSubWithFraction(
@@ -1053,11 +1046,15 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
             } else {
                 AssetInfo storage indexAsset = trancheAssets[tranche][_indexToken];
                 uint256 sizeChanged = MathUtils.frac(_vars.sizeChanged, share, totalShare);
-                uint256 indexPrice = _vars.indexPrice;
-                _updateGlobalShortPrice(tranche, _indexToken, sizeChanged, true, indexPrice, SignedIntOps.wrap(0));
+                uint256 feeAmount = _vars.feeValue / _getCollateralPrice(_collateralToken, true) - _vars.daoFee;
+                {
+                    uint256 indexPrice = _vars.indexPrice;
+                    _updateGlobalShortPrice(tranche, _indexToken, sizeChanged, true, indexPrice, SignedIntOps.wrap(0));
+                }
                 uint256 newTotalShortSize = indexAsset.totalShortSize + sizeChanged;
                 indexAsset.totalShortSize = newTotalShortSize;
                 globalShortSize += newTotalShortSize;
+                collateral.poolAmount += MathUtils.frac(feeAmount, share, totalShare);
             }
             unchecked {
                 ++i;
@@ -1125,9 +1122,9 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
         bool _isIncreasePoolAmount
     ) internal view returns (uint256[] memory reserves) {
         uint256 nTranches = allTranches.length;
-        reserves = new uint[](nTranches);
-        uint256[] memory factors = new uint[](nTranches);
-        uint256[] memory maxShare = new uint[](nTranches);
+        reserves = new uint256[](nTranches);
+        uint256[] memory factors = new uint256[](nTranches);
+        uint256[] memory maxShare = new uint256[](nTranches);
 
         for (uint256 i = 0; i < nTranches;) {
             address tranche = allTranches[i];
@@ -1247,7 +1244,10 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
 
         vars.remainingCollateral = remainingCollateral.isNeg() ? 0 : remainingCollateral.abs;
         vars.payout = payoutValue.isNeg() ? 0 : payoutValue.abs / vars.collateralPrice;
-        SignedInt memory poolValueReduced = _side == Side.LONG ? payoutValue.add(vars.feeValue) : vars.pnl;
+        SignedInt memory poolValueReduced = _side == Side.LONG
+            ? payoutValue.add(_calcDaoFee(vars.feeValue))
+            : vars.pnl.sub(vars.feeValue).add(_calcDaoFee(vars.feeValue));
+
         if (poolValueReduced.isNeg()) {
             // cap the value of pool amount change to collateral value after fee in case of lost
             uint256 totalFee = isLiquidate ? vars.feeValue + fee.liquidationFee : vars.feeValue;
