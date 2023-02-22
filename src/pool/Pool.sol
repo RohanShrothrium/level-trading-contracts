@@ -197,7 +197,7 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
         }
 
         poolTokens[_tokenOut].feeReserve += daoFee;
-        _decreaseTranchePoolAmount(_tranche, _tokenOut, outAmountAfterFee);
+        _decreaseTranchePoolAmount(_tranche, _tokenOut, outAmountAfterFee + daoFee);
         refreshVirtualPoolValue();
 
         lpToken.burnFrom(msg.sender, _lpAmount);
@@ -1088,6 +1088,7 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
                 tranchePositionReserves[tranche][_key] -= reserveReduced;
                 collateral.reservedAmount -= reserveReduced;
             }
+
             collateral.poolAmount =
                 SignedIntOps.wrap(collateral.poolAmount).sub(_vars.poolAmountReduced.frac(share, totalShare)).toUint();
 
@@ -1243,16 +1244,15 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
         }
 
         vars.remainingCollateral = remainingCollateral.isNeg() ? 0 : remainingCollateral.abs;
-        vars.payout = payoutValue.isNeg() ? 0 : payoutValue.abs / vars.collateralPrice;
+        vars.payout = payoutValue.abs / vars.collateralPrice;
         SignedInt memory poolValueReduced = _side == Side.LONG
             ? payoutValue.add(_calcDaoFee(vars.feeValue))
             : vars.pnl.sub(vars.feeValue).add(_calcDaoFee(vars.feeValue));
 
         if (poolValueReduced.isNeg()) {
             // cap the value of pool amount change to collateral value after fee in case of lost
-            uint256 totalFee = isLiquidate ? vars.feeValue + fee.liquidationFee : vars.feeValue;
             poolValueReduced.abs =
-                MathUtils.min(poolValueReduced.abs, MathUtils.zeroCapSub(_position.collateralValue, totalFee));
+                MathUtils.min(poolValueReduced.abs, MathUtils.zeroCapSub(_position.collateralValue, vars.feeValue));
         }
         vars.poolAmountReduced = poolValueReduced.div(vars.collateralPrice);
     }
