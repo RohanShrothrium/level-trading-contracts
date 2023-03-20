@@ -1,12 +1,12 @@
 pragma solidity 0.8.15;
 
-import {PoolTestFixture} from "./Fixture.sol";
-import {LPToken} from "../src/tokens/LPToken.sol";
-import {AssetInfo} from "../src/pool/PoolStorage.sol";
-import {PositionView} from "../src/pool/PoolLens.sol";
-import {Pool} from "../src/pool/Pool.sol";
-import {MathUtils} from "../src/lib/MathUtils.sol";
-import {Side} from "../src/interfaces/IPool.sol";
+import {PoolTestFixture} from "test/Fixture.sol";
+import {LPToken} from "src/tokens/LPToken.sol";
+import {AssetInfo} from "src/pool/PoolStorage.sol";
+import {PositionView} from "src/lens/PoolLens.sol";
+import {Pool} from "src/pool/Pool.sol";
+import {MathUtils} from "src/lib/MathUtils.sol";
+import {Side} from "src/interfaces/IPool.sol";
 import "forge-std/console.sol";
 
 contract MultipleTranchesTest is PoolTestFixture {
@@ -38,7 +38,7 @@ contract MultipleTranchesTest is PoolTestFixture {
         vm.stopPrank();
 
         vm.startPrank(alice);
-        btc.mint(10e8);
+        btc.mint(100e8);
         usdc.mint(1_000_000e6);
         btc.approve(address(router), type(uint256).max);
         usdc.approve(address(router), type(uint256).max);
@@ -46,8 +46,7 @@ contract MultipleTranchesTest is PoolTestFixture {
         vm.deal(alice, 1000e18);
     }
 
-    /// @notice add and remove liquidity to different tranches
-    function testLiquidity() external {
+    function test_add_remove_liquidity_to_different_tranches() external {
         vm.startPrank(alice);
         uint256 priorBalance;
         uint256 lpAmount;
@@ -120,7 +119,7 @@ contract MultipleTranchesTest is PoolTestFixture {
         vm.stopPrank();
     }
 
-    function testLpPriceWithPositions() external {
+    function test_lp_price_with_positions() external {
         // unset fee to simply the calculation
         vm.prank(owner);
         pool.setPositionFee(0, 0);
@@ -164,7 +163,7 @@ contract MultipleTranchesTest is PoolTestFixture {
         assertEq(pool.getLpPrice(address(tranche_1)), 1002312500000, "LP price is wrong");
     }
 
-    function testDistributePnL() external {
+    function test_distribute_pnl() external {
         // unset fee to simply the calculation
         vm.prank(owner);
         pool.setPositionFee(0, 0);
@@ -222,7 +221,7 @@ contract MultipleTranchesTest is PoolTestFixture {
         );
     }
 
-    function testAddLiquidityAfterOpenPosition() external {
+    function test_add_liquidity_after_open_position() external {
         // unset fee to simply the calculation
         vm.prank(owner);
         pool.setPositionFee(0, 0);
@@ -249,7 +248,7 @@ contract MultipleTranchesTest is PoolTestFixture {
         router.addLiquidity(address(tranche_2), address(btc), 1e8, 0, alice);
     }
 
-    function testRemoveLiquidityAfterPnLRealized() external {
+    function test_remove_liquidity_after_pnl_realized() external {
         // unset fee to simply the calculation
         vm.prank(owner);
         pool.setPositionFee(0, 0);
@@ -261,8 +260,11 @@ contract MultipleTranchesTest is PoolTestFixture {
         router.addLiquidity(address(tranche_1), address(usdc), 20_000e6, 0, alice);
         router.addLiquidity(address(tranche_2), address(usdc), 20_000e6, 0, alice);
         router.addLiquidity(address(tranche_3), address(usdc), 20_000e6, 0, alice);
+        router.addLiquidity(address(tranche_1), address(btc), 10e8, 0, alice);
+        router.addLiquidity(address(tranche_2), address(btc), 10e8, 0, alice);
+        router.addLiquidity(address(tranche_3), address(btc), 10e8, 0, alice);
 
-        usdc.transfer(address(pool), 2000e6);
+        usdc.transfer(address(pool), 2_000e6);
         vm.stopPrank();
 
         vm.prank(orderManager);
@@ -279,7 +281,7 @@ contract MultipleTranchesTest is PoolTestFixture {
         console.log(pool.getTrancheValue(address(tranche_1), true));
     }
 
-    function testSwap() external {
+    function test_swap() external {
         vm.prank(owner);
         pool.setSwapFee(3e7, 3e7, 1e7, 1e7);
         oracle.setPrice(address(btc), 20_000e22);
@@ -300,7 +302,7 @@ contract MultipleTranchesTest is PoolTestFixture {
         console.log("output", usdc.balanceOf(alice) - usdcBalance);
     }
 
-    function testCanCloseLongPositionWhenTrancheRatioMissMatch() external {
+    function test_can_close_long_position_when_tranche_ratio_miss_match() external {
         vm.prank(owner);
         pool.setPositionFee(0, 0);
         vm.prank(bob);

@@ -4,18 +4,19 @@ pragma solidity 0.8.15;
 
 import "forge-std/Test.sol";
 import {Pool, TokenWeight, Side} from "src/pool/Pool.sol";
-import {PoolAsset, PositionView, PoolLens} from "src/pool/PoolLens.sol";
-import {MockOracle} from "./mocks/MockOracle.sol";
-import {MockERC20} from "./mocks/MockERC20.sol";
+import {PoolAsset, PositionView, PoolLens} from "src/lens/PoolLens.sol";
+import {MockOracle} from "test/mocks/MockOracle.sol";
+import {MockERC20} from "test/mocks/MockERC20.sol";
 import {ILPToken} from "src/interfaces/ILPToken.sol";
 import {PoolErrors} from "src/pool/PoolErrors.sol";
 import {LPToken} from "src/tokens/LPToken.sol";
 import {PositionUtils} from "src/lib/PositionUtils.sol";
-import {PoolTestFixture} from "./Fixture.sol";
+import {PoolTestFixture} from "test/Fixture.sol";
 import {SignedInt, SignedIntOps} from "src/lib/SignedInt.sol";
 
 contract ShortTrackingTest is PoolTestFixture {
-    using SignedIntOps for SignedInt;
+    using SignedIntOps for int256;
+
     address tranche;
 
     function setUp() external {
@@ -43,7 +44,7 @@ contract ShortTrackingTest is PoolTestFixture {
         vm.stopPrank();
     }
 
-    function testShortPositionPnL() external {
+    function test_short_position_pnl() external {
         vm.startPrank(owner);
         pool.setPositionFee(0, 0);
         pool.setInterestRate(0, 1);
@@ -54,6 +55,9 @@ contract ShortTrackingTest is PoolTestFixture {
         vm.startPrank(alice);
         usdc.approve(address(router), type(uint256).max);
         router.addLiquidity(tranche, address(usdc), 1000000e6, 0, alice);
+        btc.mint(10e8);
+        btc.approve(address(router), type(uint256).max);
+        router.addLiquidity(tranche, address(btc), 10e8, 0, alice);
         vm.stopPrank();
 
         vm.startPrank(orderManager);
@@ -76,18 +80,18 @@ contract ShortTrackingTest is PoolTestFixture {
                 lens.getPosition(address(pool), bob, address(btc), address(usdc), Side.SHORT);
 
             uint256 indexPrice = 19000e22;
-            SignedInt memory totalPnL = PositionUtils.calcPnl(
+            int256 totalPnL = PositionUtils.calcPnl(
                 Side.SHORT, alicePosition.size, alicePosition.entryPrice, indexPrice
-            ).add(PositionUtils.calcPnl(Side.SHORT, bobPosition.size, bobPosition.entryPrice, indexPrice));
-            console.log("total PnL", totalPnL.sig, totalPnL.abs);
+            ) + PositionUtils.calcPnl(Side.SHORT, bobPosition.size, bobPosition.entryPrice, indexPrice);
+            console.log("total PnL", totalPnL > 0, totalPnL.abs());
 
             PoolAsset memory poolAsset = lens.poolAssets(address(pool), address(btc));
             console.log("global short position", poolAsset.totalShortSize, poolAsset.averageShortPrice);
-            SignedInt memory globalPnL =
+            int256 globalPnL =
                 PositionUtils.calcPnl(Side.SHORT, poolAsset.totalShortSize, poolAsset.averageShortPrice, indexPrice);
-            console.log("global short position PnL", globalPnL.sig, globalPnL.abs);
+            console.log("global short position PnL", globalPnL > 0 ? "+" : "-", globalPnL.abs());
             // allow some small rouding error
-            assertTrue(diff(globalPnL.abs, totalPnL.abs, 1e18) <= 1);
+            assertTrue((globalPnL - totalPnL).abs() <= 1e12);
         }
 
         // CLOSE partial short
@@ -100,21 +104,21 @@ contract ShortTrackingTest is PoolTestFixture {
                 lens.getPosition(address(pool), bob, address(btc), address(usdc), Side.SHORT);
 
             uint256 indexPrice = 19000e22;
-            SignedInt memory totalPnL = PositionUtils.calcPnl(
+            int256 totalPnL = PositionUtils.calcPnl(
                 Side.SHORT, alicePosition.size, alicePosition.entryPrice, indexPrice
-            ).add(PositionUtils.calcPnl(Side.SHORT, bobPosition.size, bobPosition.entryPrice, indexPrice));
-            console.log("total PnL", totalPnL.sig, totalPnL.abs);
+            ) + PositionUtils.calcPnl(Side.SHORT, bobPosition.size, bobPosition.entryPrice, indexPrice);
+            console.log("total PnL", totalPnL > 0 ? "+" : "-", totalPnL.abs());
 
             PoolAsset memory poolAsset = lens.poolAssets(address(pool), address(btc));
             console.log("global short position", poolAsset.totalShortSize, poolAsset.averageShortPrice);
-            SignedInt memory globalPnL =
+            int256 globalPnL =
                 PositionUtils.calcPnl(Side.SHORT, poolAsset.totalShortSize, poolAsset.averageShortPrice, indexPrice);
-            console.log("global short position PnL", globalPnL.sig, globalPnL.abs);
-            assertTrue(diff(globalPnL.abs, totalPnL.abs, 1e18) <= 1);
+            console.log("global short position PnL", globalPnL >= 0 ? "+" : "-", globalPnL.abs());
+            assertTrue((globalPnL - totalPnL).abs() <= 1e18);
         }
     }
 
-    function testLiquidateShortSlow() external {
+    function test_liquidate_short_slow() external {
         vm.startPrank(owner);
         pool.setPositionFee(1e7, 5e30);
         pool.setInterestRate(1e5, 3600);
@@ -124,7 +128,10 @@ contract ShortTrackingTest is PoolTestFixture {
         // add liquidity
         vm.startPrank(alice);
         usdc.approve(address(router), type(uint256).max);
-        router.addLiquidity(tranche, address(usdc), 1000000e6, 0, alice);
+        router.addLiquidity(tranche, address(usdc), 1_000_000e6, 0, alice);
+        btc.mint(10e8);
+        btc.approve(address(router), type(uint256).max);
+        router.addLiquidity(tranche, address(btc), 10e8, 0, alice);
         vm.stopPrank();
 
         vm.startPrank(orderManager);

@@ -14,84 +14,20 @@ struct SignedInt {
 }
 
 library SignedIntOps {
-    function add(SignedInt memory a, SignedInt memory b) internal pure returns (SignedInt memory) {
-        if (a.sig == b.sig) {
-            return SignedInt({sig: a.sig, abs: a.abs + b.abs});
-        }
-
-        if (a.abs == b.abs) {
-            return SignedInt(POS, 0); // always return positive zero
-        }
-
-        unchecked {
-            (uint256 sig, uint256 abs) = a.abs > b.abs ? (a.sig, a.abs - b.abs) : (b.sig, b.abs - a.abs);
-            return SignedInt(sig, abs);
-        }
+    function frac(int256 a, uint256 num, uint256 denom) internal pure returns (int256) {
+        return a * int256(num) / int256(denom);
     }
 
-    function inv(SignedInt memory a) internal pure returns (SignedInt memory) {
-        return a.abs == 0 ? a : (SignedInt({sig: 1 - a.sig, abs: a.abs}));
+    function abs(int256 x) internal pure returns (uint256) {
+        return x < 0 ? uint256(-x) : uint256(x);
     }
 
-    function sub(SignedInt memory a, SignedInt memory b) internal pure returns (SignedInt memory) {
-        return add(a, inv(b));
+    function asTuple(int256 x) internal pure returns (SignedInt memory) {
+        return SignedInt({abs: abs(x), sig: x < 0 ? NEG : POS});
     }
 
-    function mul(SignedInt memory a, SignedInt memory b) internal pure returns (SignedInt memory) {
-        uint256 sig = (a.sig + b.sig + 1) % 2;
-        uint256 abs = a.abs * b.abs;
-        return SignedInt(abs == 0 ? POS : sig, abs); // zero is alway positive
-    }
-
-    function div(SignedInt memory a, SignedInt memory b) internal pure returns (SignedInt memory) {
-        uint256 sig = (a.sig + b.sig + 1) % 2;
-        uint256 abs = a.abs / b.abs;
-        return SignedInt(abs == 0 ? POS : sig, abs); // zero is alway positive
-    }
-
-    function add(SignedInt memory a, uint256 b) internal pure returns (SignedInt memory) {
-        return add(a, wrap(b));
-    }
-
-    function sub(SignedInt memory a, uint256 b) internal pure returns (SignedInt memory) {
-        return sub(a, wrap(b));
-    }
-
-    function mul(SignedInt memory a, uint256 b) internal pure returns (SignedInt memory) {
-        return mul(a, wrap(b));
-    }
-
-    function div(SignedInt memory a, uint256 b) internal pure returns (SignedInt memory) {
-        return div(a, wrap(b));
-    }
-
-    function wrap(uint256 a) internal pure returns (SignedInt memory) {
-        return SignedInt(POS, a);
-    }
-
-    function toUint(SignedInt memory a) internal pure returns (uint256) {
-        if (a.abs == 0) return 0;
-        require(a.sig == POS, "SignedInt: below zero");
-        return a.abs;
-    }
-
-    function gt(SignedInt memory a, uint256 b) internal pure returns (bool) {
-        return a.sig == POS && a.abs > b;
-    }
-
-    function lt(SignedInt memory a, uint256 b) internal pure returns (bool) {
-        return a.sig == NEG || a.abs < b;
-    }
-
-    function isNeg(SignedInt memory a) internal pure returns (bool) {
-        return a.sig == NEG;
-    }
-
-    function isPos(SignedInt memory a) internal pure returns (bool) {
-        return a.sig == POS;
-    }
-
-    function frac(SignedInt memory a, uint256 num, uint256 denom) internal pure returns (SignedInt memory) {
-        return div(mul(a, num), denom);
+    function toUint(int256 x) internal pure returns (uint256) {
+        require(x >= 0, "SignedInt: below zero");
+        return uint256(x);
     }
 }

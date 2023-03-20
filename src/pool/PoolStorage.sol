@@ -62,7 +62,7 @@ struct PoolTokenInfo {
     uint256 borrowIndex;
     /// @notice average entry price of all short position
     /// @deprecated avg short price must be calculate per tranche
-    uint256 averageShortPrice;
+    uint256 ___averageShortPrice;
 }
 
 struct AssetInfo {
@@ -138,4 +138,5 @@ abstract contract PoolStorage {
     uint256 public virtualPoolValue;
     /// @notice index token => max global short size
     mapping(address => uint256) public maxGlobalShortSizes;
+    mapping(address => uint256) public maxGlobalLongSizeRatios;
 }

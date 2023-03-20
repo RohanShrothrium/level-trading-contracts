@@ -2,9 +2,9 @@
 
 pragma solidity 0.8.15;
 
-import {PoolStorage, AssetInfo, PoolTokenInfo, Position, MAX_TRANCHES} from "./PoolStorage.sol";
+import {PoolStorage, AssetInfo, PoolTokenInfo, Position, MAX_TRANCHES} from "src/pool/PoolStorage.sol";
 import {Side, IPool} from "../interfaces/IPool.sol";
-import {SignedInt, SignedIntOps} from "../lib/SignedInt.sol";
+import {SignedIntOps} from "../lib/SignedInt.sol";
 import {PositionUtils} from "../lib/PositionUtils.sol";
 import {ILevelOracle} from "../interfaces/ILevelOracle.sol";
 
@@ -43,10 +43,11 @@ interface IPoolForLens is IPool {
     function getPoolValue(bool _max) external view returns (uint256);
     function getTrancheValue(address _tranche, bool _max) external view returns (uint256 sum);
     function averageShortPrices(address _tranche, address _token) external view returns (uint256);
+    function isStableCoin(address) external view returns (bool);
 }
 
 contract PoolLens {
-    using SignedIntOps for SignedInt;
+    using SignedIntOps for int256;
 
     function poolAssets(address _pool, address _token) external view returns (PoolAsset memory poolAsset) {
         IPoolForLens self = IPoolForLens(_pool);
@@ -84,13 +85,13 @@ contract PoolLens {
         Position memory position = self.positions(positionKey);
         uint256 indexPrice =
             _side == Side.LONG ? oracle.getPrice(_indexToken, false) : oracle.getPrice(_indexToken, true);
-        SignedInt memory pnl = PositionUtils.calcPnl(_side, position.size, position.entryPrice, indexPrice);
+        int256 pnl = PositionUtils.calcPnl(_side, position.size, position.entryPrice, indexPrice);
 
         result.key = positionKey;
         result.size = position.size;
         result.collateralValue = position.collateralValue;
-        result.pnl = pnl.abs;
-        result.hasProfit = pnl.isPos();
+        result.pnl = pnl.abs();
+        result.hasProfit = pnl > 0;
         result.entryPrice = position.entryPrice;
         result.borrowIndex = position.borrowIndex;
         result.reserveAmount = position.reserveAmount;
@@ -132,5 +133,49 @@ contract PoolLens {
                 ++i;
             }
         }
+    }
+
+    function getAssetAum(address _poolAddress, address _tranche, address _token, bool _max)
+        external
+        view
+        returns (uint256)
+    {
+        PoolStorage _pool = PoolStorage(_poolAddress);
+        bool isStable = _pool.isStableCoin(_token);
+        ILevelOracle oracle = _pool.oracle();
+        uint256 price = oracle.getPrice(_token, _max);
+        (uint256 poolAmount, uint256 reservedAmount, uint256 guaranteedValue, uint256 totalShortSize) =
+            _pool.trancheAssets(_tranche, _token);
+        if (isStable) {
+            return poolAmount * price;
+        } else {
+            uint256 averageShortPrice = _pool.averageShortPrices(_tranche, _token);
+            int256 shortPnl = PositionUtils.calcPnl(Side.SHORT, totalShortSize, averageShortPrice, price);
+            int256 aum = int256(poolAmount - reservedAmount) * int256(price) + int256(guaranteedValue);
+            return uint256(aum - shortPnl);
+        }
+    }
+
+    function getAssetPoolAum(IPoolForLens _pool, address _token, bool _max) external view returns (uint256) {
+        bool isStable = _pool.isStableCoin(_token);
+        uint256 price = _pool.oracle().getPrice(_token, _max);
+        uint256 nTranches = _pool.getAllTranchesLength();
+
+        int256 sum = 0;
+
+        for (uint256 i = 0; i < nTranches; ++i) {
+            address _tranche = _pool.allTranches(i);
+            AssetInfo memory asset = _pool.trancheAssets(_tranche, _token);
+            if (isStable) {
+                sum = sum + int256(asset.poolAmount * price);
+            } else {
+                uint256 averageShortPrice = _pool.averageShortPrices(_tranche, _token);
+                int256 shortPnl = PositionUtils.calcPnl(Side.SHORT, asset.totalShortSize, averageShortPrice, price);
+                sum = int256(asset.poolAmount - asset.reservedAmount) * int256(price) + int256(asset.guaranteedValue)
+                    + sum - shortPnl;
+            }
+        }
+
+        return uint256(sum);
     }
 }

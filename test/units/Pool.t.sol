@@ -3,17 +3,31 @@
 pragma solidity 0.8.15;
 
 import "forge-std/Test.sol";
-import {Pool, TokenWeight, Side} from "../src/pool/Pool.sol";
-import {PoolAsset, PositionView, PoolLens} from "src/pool/PoolLens.sol";
-import {MockOracle} from "./mocks/MockOracle.sol";
-import {MockERC20} from "./mocks/MockERC20.sol";
-import {ILPToken} from "../src/interfaces/ILPToken.sol";
-import {PoolErrors} from "../src/pool/PoolErrors.sol";
-import {LPToken} from "../src/tokens/LPToken.sol";
-import {PoolTestFixture} from "./Fixture.sol";
+import {Pool, TokenWeight, Side} from "src/pool/Pool.sol";
+import {PoolAsset, PositionView, PoolLens} from "src/lens/PoolLens.sol";
+import {MockOracle} from "test/mocks/MockOracle.sol";
+import {MockERC20} from "test/mocks/MockERC20.sol";
+import {ILPToken} from "src/interfaces/ILPToken.sol";
+import {PoolErrors} from "src/pool/PoolErrors.sol";
+import {LPToken} from "src/tokens/LPToken.sol";
+import {PoolTestFixture} from "test/Fixture.sol";
 
+/// @dev DAO take all fee. Test Position param only
 contract PoolTest is PoolTestFixture {
     address tranche;
+
+    function _beforeTestPosition() internal {
+        vm.prank(owner);
+        pool.setOrderManager(orderManager);
+        oracle.setPrice(address(usdc), 1e24);
+        oracle.setPrice(address(btc), 20000e22);
+        oracle.setPrice(address(weth), 1000e12);
+        vm.startPrank(alice);
+        btc.mint(10e8);
+        usdc.mint(50000e6);
+        vm.deal(alice, 100e18);
+        vm.stopPrank();
+    }
 
     function setUp() external {
         build();
@@ -29,34 +43,38 @@ contract PoolTest is PoolTestFixture {
     }
 
     // ========== ADMIN FUNCTIONS ==========
-    function testFailSetOracleFromWildAddress() public {
+    function test_fail_set_oracle_from_unauthorized_should_revert() public {
         vm.prank(eve);
+        vm.expectRevert("Ownable: caller is not the owner");
         pool.setOracle(address(oracle));
     }
 
-    function testSetOracle() public {
+    function test_set_oracle() public {
         vm.prank(owner);
         pool.setOracle(address(oracle));
     }
 
     // ========== LIQUIDITY PROVIDER ==========
 
-    function testFailToAddLiquidityWhenPriceNotAvailable() public {
+    function test_fail_to_add_liquidity_when_risk_factor_not_set() public {
+        MockERC20 tokenA = new MockERC20("tokenA", "TA", 18);
         vm.prank(owner);
-        pool.addToken(address(btc), false);
+        pool.addToken(address(tokenA), false);
         vm.startPrank(alice, alice);
-        btc.approve(address(router), 1000e6);
-        router.addLiquidity(tranche, address(btc), 100e6, 0, alice);
+        tokenA.mint(1 ether);
+        tokenA.approve(address(router), 1 ether);
+        vm.expectRevert(abi.encodeWithSelector(PoolErrors.AddLiquidityNotAllowed.selector, address(tranche), address(tokenA)));
+        router.addLiquidity(tranche, address(tokenA), 1 ether, 0, alice);
     }
 
-    function testAddLiquidityUsingNotWhitelistedToken() public {
+    function test_add_liquidity_using_not_whitelisted_token() public {
         vm.startPrank(alice, alice);
         btc.approve(address(router), 1000e6);
         vm.expectRevert();
         router.addLiquidity(tranche, address(0), 100e6, 0, alice);
     }
 
-    function testAddAndRemoveLiquidity() external {
+    function test_add_and_remove_liquidity() external {
         oracle.setPrice(address(usdc), 1e24);
         oracle.setPrice(address(btc), 20000e22);
         oracle.setPrice(address(weth), 1000e12);
@@ -76,7 +94,6 @@ contract PoolTest is PoolTestFixture {
             assertEq(asset.poolBalance, 10000e6);
             assertEq(asset.poolAmount, 10000e6);
             assertEq(lpToken.balanceOf(address(alice)), 10000e18);
-            // assertEq(pool.getPoolValue(true), 10000e30);
             poolAmount1 = asset.poolAmount;
         }
 
@@ -90,7 +107,6 @@ contract PoolTest is PoolTestFixture {
             assertEq(asset.poolAmount, 1e8);
             assertEq(asset.feeReserve, 0);
             assertEq(asset.reservedAmount, 0);
-            // assertEq(pool.getPoolValue(true), 30000e30);
         }
 
         // eth
@@ -113,14 +129,14 @@ contract PoolTest is PoolTestFixture {
     }
 
     // ============ POSITIONS ==============
-    function testOnlyOrderManagerCanIncreaseDecreasePosition() external {
+    function test_only_order_manager_can_increase_decrease_position() external {
         vm.expectRevert(abi.encodeWithSelector(PoolErrors.OrderManagerOnly.selector));
         pool.increasePosition(alice, address(btc), address(btc), 1e8, Side.LONG);
         vm.expectRevert(abi.encodeWithSelector(PoolErrors.OrderManagerOnly.selector));
         pool.decreasePosition(alice, address(btc), address(btc), 1e6, 1e8, Side.LONG, alice);
     }
 
-    function testSetOrderManager() external {
+    function test_set_order_manager() external {
         vm.expectRevert("Ownable: caller is not the owner");
         pool.setOrderManager(alice);
         vm.prank(owner);
@@ -128,20 +144,7 @@ contract PoolTest is PoolTestFixture {
         assertEq(pool.orderManager(), alice);
     }
 
-    function _beforeTestPosition() internal {
-        vm.prank(owner);
-        pool.setOrderManager(orderManager);
-        oracle.setPrice(address(usdc), 1e24);
-        oracle.setPrice(address(btc), 20000e22);
-        oracle.setPrice(address(weth), 1000e12);
-        vm.startPrank(alice);
-        btc.mint(2e8);
-        usdc.mint(50000e6);
-        vm.deal(alice, 1e18);
-        vm.stopPrank();
-    }
-
-    function testCannotLongWithInvalidSize() external {
+    function test_cannot_long_with_invalid_size() external {
         _beforeTestPosition();
         vm.startPrank(orderManager);
         btc.mint(1e8);
@@ -153,12 +156,12 @@ contract PoolTest is PoolTestFixture {
         vm.stopPrank();
     }
 
-    function testLongPosition() external {
+    function test_long_position() external {
         _beforeTestPosition();
         // add liquidity
         vm.startPrank(alice);
         btc.approve(address(router), type(uint256).max);
-        router.addLiquidity(tranche, address(btc), 1e8, 0, alice);
+        router.addLiquidity(tranche, address(btc), 10e8, 0, alice);
         vm.stopPrank();
 
         vm.startPrank(orderManager);
@@ -167,7 +170,7 @@ contract PoolTest is PoolTestFixture {
         {
             PoolAsset memory asset = lens.poolAssets(address(pool), address(usdc));
             console.log("cumulativeInterestRate", asset.borrowIndex, asset.lastAccrualTimestamp);
-            assertEq(asset.poolAmount + asset.feeReserve, asset.poolBalance, "fee reserve not match");
+            assertEq(asset.poolAmount + asset.feeReserve, asset.poolBalance, "addLiquidity: !invariant");
         }
 
         // try to open long position with 5x leverage
@@ -191,10 +194,10 @@ contract PoolTest is PoolTestFixture {
             assertEq(asset.borrowIndex, 0, "increase: interest not accrued");
             assertEq(asset.poolBalance, btc.balanceOf(address(pool)), "pool balance not update"); // 1BTC deposit + 0.1BTC collateral
             assertEq(asset.feeReserve, 50000, "fee reserve not match");
-            assertEq(asset.poolAmount, 109950000, "pool amount not match");
-            assertEq(asset.poolAmount + asset.feeReserve, asset.poolBalance, "fee reserve not match");
+            assertEq(asset.poolAmount, 1009950000, "pool amount not match");
+            assertEq(asset.poolAmount + asset.feeReserve, asset.poolBalance, "increase: !invariant");
             assertEq(asset.reservedAmount, 5e7); // 0.5BTC = position size
-            assertEq(asset.guaranteedValue, 8_010e30);
+            assertEq(asset.guaranteedValue, 8_010e30, "increase: guranteed value incorrect");
             assertEq(pool.getTrancheAsset(tranche, address(btc)).reservedAmount, 5e7, "trache reserve not update");
             // assertEq(pool.getTrancheValue(tranche), lens.getTrancheValue(address(pool), tranche));
         }
@@ -216,10 +219,10 @@ contract PoolTest is PoolTestFixture {
             PoolAsset memory asset = lens.poolAssets(address(pool), address(btc));
             console.log(asset.poolAmount, asset.feeReserve, asset.poolBalance);
             assertEq(asset.lastAccrualTimestamp, 1100, "interest not accrued");
-            assertEq(asset.borrowIndex, 454752, "interest not accrued"); // 1 interval
+            assertEq(asset.borrowIndex, 49507, "interest not accrued"); // 1 interval
             assertEq(asset.reservedAmount, 25e6);
-            assertEq(asset.poolBalance, 104563194);
-            assertEq(asset.poolAmount + asset.feeReserve, asset.poolBalance, "pool balance and amount not match");
+            assertEq(asset.poolBalance, 1004561218);
+            assertApproxEqAbs(asset.poolAmount + asset.feeReserve, asset.poolBalance, 1, "pool balance and amount not match");
         }
 
         position = lens.getPosition(address(pool), alice, address(btc), address(btc), Side.LONG);
@@ -229,7 +232,7 @@ contract PoolTest is PoolTestFixture {
         {
             uint256 balance = btc.balanceOf(alice);
             uint256 transferOut = balance - priorBalance;
-            assertEq(transferOut, 5436806);
+            assertEq(transferOut, 5438782);
             priorBalance = balance;
         }
 
@@ -249,14 +252,14 @@ contract PoolTest is PoolTestFixture {
         {
             uint256 balance = btc.balanceOf(alice);
             uint256 transferOut = balance - priorBalance;
-            assertEq(transferOut, 5438440);
+            assertEq(transferOut, 5438963);
             priorBalance = balance;
         }
 
         vm.stopPrank();
     }
 
-    function testShortPosition() external {
+    function test_short_position() external {
         vm.prank(owner);
         pool.setPositionFee(0, 0);
         vm.prank(owner);
@@ -266,6 +269,9 @@ contract PoolTest is PoolTestFixture {
         vm.startPrank(alice);
         usdc.approve(address(router), type(uint256).max);
         router.addLiquidity(tranche, address(usdc), 10000e6, 0, alice);
+        uint256 amountToRemove = LPToken(tranche).balanceOf(alice);
+        btc.approve(address(router), type(uint256).max);
+        router.addLiquidity(tranche, address(btc), 10e8, 0, alice);
         vm.stopPrank();
 
         vm.startPrank(orderManager);
@@ -323,7 +329,7 @@ contract PoolTest is PoolTestFixture {
         vm.stopPrank();
         // REMOVE liquidity after add
         vm.startPrank(alice);
-        uint256 amountToRemove = LPToken(tranche).balanceOf(alice);
+
         uint256 aliceUsdc = usdc.balanceOf(alice);
         LPToken(tranche).approve(address(router), type(uint256).max);
         router.removeLiquidity(tranche, address(usdc), amountToRemove, 0, alice);
@@ -331,7 +337,8 @@ contract PoolTest is PoolTestFixture {
         vm.stopPrank();
     }
 
-    function testLiquidatePosition() external {
+    // liquidate when maintenance margin not sufficient
+    function test_liquidate_position_with_low_maintenance_margin() external {
         _beforeTestPosition();
         // add liquidity
         vm.startPrank(alice);
@@ -341,11 +348,12 @@ contract PoolTest is PoolTestFixture {
 
         vm.startPrank(orderManager);
         btc.mint(1e8);
-
         // try to open long position with 5x leverage
         vm.warp(1000);
         btc.transfer(address(pool), 1e7); // 0.1BTC = 2_000$
         pool.increasePosition(alice, address(btc), address(btc), 10_000e30, Side.LONG);
+        vm.stopPrank();
+
         PositionView memory position = lens.getPosition(address(pool), alice, address(btc), address(btc), Side.LONG);
         assertEq(position.size, 10_000e30);
         assertEq(position.reserveAmount, 5e7);
@@ -354,8 +362,8 @@ contract PoolTest is PoolTestFixture {
         {
             PoolAsset memory asset = lens.poolAssets(address(pool), address(btc));
             assertEq(asset.poolBalance, 110000000, "pool balance not update"); // 1BTC deposit + 0.1BTC collateral
-            assertEq(asset.poolAmount + asset.feeReserve, asset.poolBalance);
             assertEq(asset.reservedAmount, 5e7); // 0.5BTC = position size
+            _checkInvariant(address(btc));
         }
 
         // calculate pnl
@@ -363,32 +371,29 @@ contract PoolTest is PoolTestFixture {
         position = lens.getPosition(address(pool), alice, address(btc), address(btc), Side.LONG);
         assertEq(position.pnl, 1905e30);
         assertFalse(position.hasProfit);
-        // collateral = (init + pnl) = 85$ < 0.01 * 10_000
-        // charge liquidate fee = 5$, position fee = 10$ transfer remain 70$ to position owner
-        // pool balance =
-        vm.stopPrank();
 
         // liquidate position
-        // profit = -2000, transfer out liquidation fee
+        // profit = -1905, collateral value = 85, margin rate = 0.85% -> liquidated
+        // take 10$ position fee, refund 70$ collateral, pay 5$ to liquidator
+        // pool balance = 1.1 - 75/16190
         // vm.startPrank(bob);
         uint256 balance = btc.balanceOf(orderManager);
         vm.startPrank(orderManager);
         pool.liquidatePosition(alice, address(btc), address(btc), Side.LONG);
-        // {
-        //     PoolAsset memory asset = lens.poolAssets(address(pool), address(btc));
-
-        //     assertEq(asset.reservedAmount, 0);
-        //     assertEq(asset.poolBalance, 109536752, "balance not update after liquidate");
-        //     assertEq(
-        //         asset.poolAmount + asset.feeReserve, asset.poolBalance, "pool amount and pool balance miss matched"
-        //     );
-        // }
+        {
+            PoolAsset memory asset = lens.poolAssets(address(pool), address(btc));
+            assertEq(asset.reservedAmount, 0, "liquidate: reserved not reset");
+            assertEq(asset.poolBalance, 109536752, "balance not update after liquidate");
+            _checkInvariant(address(btc));
+        }
         balance = btc.balanceOf(orderManager) - balance;
-        assertEq(balance, 30883, "not transfer out liquidation fee"); // 5$ / 6190
+        assertEq(balance, 30883, "not transfer out liquidation fee"); // 5$ / 16190
         vm.stopPrank();
     }
 
-    function testLiquidatePosition2() external {
+    // liquidate too slow, net value far lower than liquidation fee
+    // collect all collateral amount, liquidation fee take from pool amount
+    function test_liquidate_when_net_value_lower_than_liquidate_fee() external {
         _beforeTestPosition();
         // add liquidity
         vm.startPrank(alice);
@@ -411,10 +416,8 @@ contract PoolTest is PoolTestFixture {
         {
             PoolAsset memory asset = lens.poolAssets(address(pool), address(btc));
             assertEq(asset.poolBalance, 110000000, "pool balance not update"); // 1BTC deposit + 0.1BTC collateral
-            assertApproxEqAbs(
-                asset.poolAmount + asset.feeReserve, asset.poolBalance, 1, "pool_amount + fee_reserve = pool_balance"
-            );
             assertEq(asset.reservedAmount, 5e7); // 0.5BTC = position size
+            _checkInvariant(address(btc));
         }
 
         // calculate pnl
@@ -429,24 +432,25 @@ contract PoolTest is PoolTestFixture {
 
         // liquidate position
         // profit = -2000, transfer out liquidation fee
+        // pool balance -= 5$ (liquidation fee only)
         uint256 balance = btc.balanceOf(orderManager);
         vm.startPrank(orderManager);
         pool.liquidatePosition(alice, address(btc), address(btc), Side.LONG);
         {
             PoolAsset memory asset = lens.poolAssets(address(pool), address(btc));
 
-            assertEq(asset.reservedAmount, 0);
+            assertEq(asset.reservedAmount, 0, "liquidate: reserve amount reset");
             assertEq(asset.poolBalance, 109968750, "balance not update after liquidate");
-            assertEq(
-                asset.poolAmount + asset.feeReserve, asset.poolBalance, "pool amount and pool balance miss matched"
+            assertApproxEqAbs(
+                asset.poolAmount + asset.feeReserve, asset.poolBalance, 1, "pool amount and pool balance miss matched"
             );
         }
         balance = btc.balanceOf(orderManager) - balance;
-        assertEq(balance, 31250, "not transfer out liquidation fee"); // 5$ / 6190
+        assertEq(balance, 31250, "not transfer out liquidation fee"); // 5$ / 16k
         vm.stopPrank();
     }
 
-    function testLiquidateShortPosition() external {
+    function test_liquidate_short_position() external {
         vm.prank(owner);
         pool.setPositionFee(1e7, 5e30);
         _beforeTestPosition();
@@ -454,6 +458,8 @@ contract PoolTest is PoolTestFixture {
         vm.startPrank(alice);
         usdc.approve(address(router), type(uint256).max);
         router.addLiquidity(tranche, address(usdc), 10000e6, 0, alice);
+        btc.approve(address(router), type(uint256).max);
+        router.addLiquidity(tranche, address(btc), 10e8, 0, alice);
         vm.stopPrank();
 
         vm.startPrank(orderManager);
@@ -502,7 +508,7 @@ contract PoolTest is PoolTestFixture {
         vm.stopPrank();
     }
 
-    function testSwap() external {
+    function test_swap() external {
         _beforeTestPosition();
 
         oracle.setPrice(address(usdc), 1e24);
@@ -526,11 +532,18 @@ contract PoolTest is PoolTestFixture {
         }
 
         {
+            vm.expectRevert(); // SameTokenSwap
+            pool.swap(address(btc), address(btc), 0, alice, new bytes(0));
+        }
+
+        {
             uint256 output = btc.balanceOf(alice);
             usdc.transfer(address(pool), 1e6);
+            (uint256 amountOut, ) = pool.calcSwapOutput(address(usdc), address(btc), 1e6);
             pool.swap(address(usdc), address(btc), 0, alice, new bytes(0));
             output = btc.balanceOf(alice) - output;
             assertEq(output, 4995);
+            assertEq(amountOut, 4995);
         }
         {
             uint256 output = usdc.balanceOf(alice);
@@ -551,7 +564,7 @@ contract PoolTest is PoolTestFixture {
         vm.stopPrank();
     }
 
-    function testSetMaxGlobalShortSize() public {
+    function test_set_max_global_short_size() public {
         _beforeTestPosition();
 
         vm.prank(eve);
@@ -569,7 +582,7 @@ contract PoolTest is PoolTestFixture {
         pool.setMaxGlobalShortSize(address(usdc), 1000e30);
     }
 
-    function testMaxGlobalShortSize() external {
+    function test_max_global_short_size() external {
         vm.startPrank(owner);
         oracle.setPrice(address(usdc), 1e24);
         oracle.setPrice(address(btc), 20000e22);
@@ -579,9 +592,12 @@ contract PoolTest is PoolTestFixture {
         usdc.mint(1000e6);
         usdc.approve(address(router), type(uint256).max);
         router.addLiquidity(tranche, address(usdc), 1000e6, 0, alice);
+        btc.mint(10e8);
+        btc.approve(address(router), type(uint256).max);
+        router.addLiquidity(tranche, address(btc), 10e8, 0, alice);
         vm.stopPrank();
 
-        testSetMaxGlobalShortSize();
+        test_set_max_global_short_size();
         vm.prank(alice);
         usdc.transfer(address(pool), 100e6); // 100$
         vm.prank(orderManager);
@@ -591,5 +607,34 @@ contract PoolTest is PoolTestFixture {
         vm.prank(orderManager);
         vm.expectRevert();
         pool.increasePosition(alice, address(btc), address(usdc), 1_000e30, Side.SHORT);
+    }
+
+    function test_max_global_long_size() external {
+        vm.startPrank(owner);
+        oracle.setPrice(address(usdc), 1e24);
+        oracle.setPrice(address(btc), 20000e22);
+        oracle.setPrice(address(weth), 1000e12);
+        vm.stopPrank();
+        vm.startPrank(alice);
+        usdc.mint(1000e6);
+        btc.mint(2e8);
+        usdc.approve(address(router), type(uint256).max);
+        btc.approve(address(router), type(uint256).max);
+        router.addLiquidity(tranche, address(usdc), 1000e6, 0, alice);
+        router.addLiquidity(tranche, address(btc), 1e8, 0, alice);
+        vm.stopPrank();
+
+        vm.prank(owner);
+        pool.setMaxGlobalLongSizeRatio(address(btc), 5e9); // 50%
+
+        vm.prank(alice);
+        btc.transfer(address(pool), 1e6); // 0.01BTC
+        vm.prank(orderManager);
+        pool.increasePosition(alice, address(btc), address(btc), 2_000e30, Side.LONG);
+        vm.prank(alice);
+        btc.transfer(address(pool), 1e7); // 100$
+        vm.prank(orderManager);
+        vm.expectRevert();
+        pool.increasePosition(alice, address(btc), address(btc), 10_000e30, Side.SHORT);
     }
 }

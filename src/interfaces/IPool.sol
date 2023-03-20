@@ -136,4 +136,5 @@ interface IPool {
     event MaintenanceMarginChanged(uint256 ratio);
     event AddRemoveLiquidityFeeSet(uint256 value);
     event MaxGlobalShortSizeSet(address indexed token, uint256 max);
+    event MaxGlobalLongSizeRatioSet(address indexed token, uint256 max);
 }

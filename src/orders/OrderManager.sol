@@ -18,6 +18,7 @@ import {IOrderHook} from "../interfaces/IOrderHook.sol";
 // since we defined this function via a state variable of PoolStorage, it cannot be re-declared the interface IPool
 interface IWhitelistedPool is IPool {
     function isListed(address) external returns (bool);
+    function isAsset(address) external returns (bool);
 }
 
 enum UpdatePositionType {
@@ -37,9 +38,15 @@ struct UpdatePositionRequest {
     UpdatePositionType updateType;
 }
 
+/// @notice LevelOrderManager
+/// Upgrade:
+/// - only swap payToken to collateral token when execute order
 contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable {
     using SafeERC20 for IERC20;
     using SafeERC20 for IWETH;
+
+    uint8 public constant VERSION = 4;
+    uint256 public constant ORDER_VERSION = 2;
 
     uint256 constant MARKET_ORDER_TIMEOUT = 5 minutes;
     uint256 constant MAX_MIN_EXECUTION_FEE = 1e17; // 0.1 ETH
@@ -55,7 +62,7 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
 
     IWhitelistedPool public pool;
     ILevelOracle public oracle;
-    uint256 public minExecutionFee;
+    uint256 public minPerpetualExecutionFee;
 
     IOrderHook public orderHook;
 
@@ -65,10 +72,16 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
     IETHUnwrapper public ethUnwrapper;
 
     address public executor;
+    mapping(uint256 => uint256) public orderVersions;
+    uint256 public minSwapExecutionFee;
 
     modifier onlyExecutor() {
         _validateExecutor(msg.sender);
         _;
+    }
+
+    constructor() {
+        _disableInitializers();
     }
 
     receive() external payable {
@@ -86,7 +99,7 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
         require(_weth != address(0), "OrderManager:invalidWeth");
         require(_minExecutionFee <= MAX_MIN_EXECUTION_FEE, "OrderManager:minExecutionFeeTooHigh");
         require(_ethUnwrapper != address(0), "OrderManager:invalidEthUnwrapper");
-        minExecutionFee = _minExecutionFee;
+        minPerpetualExecutionFee = _minExecutionFee;
         oracle = ILevelOracle(_oracle);
         nextOrderId = 1;
         nextSwapOrderId = 1;
@@ -101,6 +114,10 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
         emit ExecutorSet(_executor);
     }
 
+    function reinit_v4(uint256 _minPerpExecutionFee, uint256 _minSwapExecutionFee) external reinitializer(VERSION) {
+        _setMinExecutionFee(_minPerpExecutionFee, _minSwapExecutionFee);
+    }
+
     // ============= VIEW FUNCTIONS ==============
     function getOrders(address user, uint256 skip, uint256 take)
         external
@@ -112,7 +129,7 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
         toIdx = toIdx > total ? total : toIdx;
         uint256 nOrders = toIdx > skip ? toIdx - skip : 0;
         orderIds = new uint[](nOrders);
-        for (uint256 i = 0; i < nOrders; i++) {
+        for (uint256 i = skip; i < skip + nOrders; i++) {
             orderIds[i] = userOrders[user][i];
         }
     }
@@ -127,7 +144,7 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
         toIdx = toIdx > total ? total : toIdx;
         uint256 nOrders = toIdx > skip ? toIdx - skip : 0;
         orderIds = new uint[](nOrders);
-        for (uint256 i = 0; i < nOrders; i++) {
+        for (uint256 i = skip; i < skip + nOrders; i++) {
             orderIds[i] = userSwapOrders[user][i];
         }
     }
@@ -161,7 +178,7 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
         (payToken, _tokenIn) = _tokenIn == ETH ? (ETH, address(weth)) : (_tokenIn, _tokenIn);
         // if token out is ETH, check wether pool support WETH
         require(
-            pool.isListed(_tokenIn) && pool.isListed(_tokenOut == ETH ? address(weth) : _tokenOut),
+            pool.isListed(_tokenIn) && pool.isAsset(_tokenOut == ETH ? address(weth) : _tokenOut),
             "OrderManager:invalidTokens"
         );
 
@@ -174,7 +191,7 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
             IERC20(_tokenIn).safeTransferFrom(msg.sender, address(this), _amountIn);
         }
 
-        require(executionFee >= minExecutionFee, "OrderManager:executionFeeTooLow");
+        require(executionFee >= minSwapExecutionFee, "OrderManager:executionFeeTooLow");
 
         SwapOrder memory order = SwapOrder({
             pool: pool,
@@ -193,9 +210,20 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
     }
 
     function swap(address _fromToken, address _toToken, uint256 _amountIn, uint256 _minAmountOut) external payable {
-        _amountIn = _fromToken == ETH ? msg.value : _amountIn;
         (address outToken, address receiver) = _toToken == ETH ? (address(weth), address(this)) : (_toToken, msg.sender);
-        uint256 amountOut = _poolSwap(_fromToken, outToken, _amountIn, _minAmountOut, receiver, msg.sender);
+
+        address inToken;
+        if (_fromToken == ETH) {
+            _amountIn = msg.value;
+            inToken = address(weth);
+            weth.deposit{value: _amountIn}();
+            weth.safeTransfer(address(pool), _amountIn);
+        } else {
+            inToken = _fromToken;
+            IERC20(inToken).safeTransferFrom(msg.sender, address(pool), _amountIn);
+        }
+
+        uint256 amountOut = _doSwap(inToken, outToken, _minAmountOut, receiver, msg.sender);
         if (outToken == address(weth) && _toToken == ETH) {
             _safeUnwrapETH(amountOut, msg.sender);
         }
@@ -220,16 +248,11 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
             return;
         }
 
-        _executeRequest(order, request);
+        _executeRequest(_orderId, order, request);
         delete orders[_orderId];
         delete requests[_orderId];
         _safeTransferETH(_feeTo, order.executionFee);
         emit OrderExecuted(_orderId, order, request, indexPrice);
-    }
-
-    function _getMarkPrice(Order memory order, UpdatePositionRequest memory request) internal view returns (uint256) {
-        bool max = (request.updateType == UpdatePositionType.INCREASE) == (request.side == Side.LONG);
-        return oracle.getPrice(order.indexToken, max);
     }
 
     function cancelOrder(uint256 _orderId) external nonReentrant {
@@ -242,7 +265,8 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
 
         _safeTransferETH(order.owner, order.executionFee);
         if (request.updateType == UpdatePositionType.INCREASE) {
-            _refundCollateral(order.collateralToken, request.collateral, order.owner);
+            address refundToken = orderVersions[_orderId] == ORDER_VERSION ? order.payToken : order.collateralToken;
+            _refundCollateral(refundToken, request.collateral, order.owner);
         }
 
         emit OrderCancelled(_orderId);
@@ -274,8 +298,18 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
         emit SwapOrderExecuted(_orderId, order.amountIn, amountOut);
     }
 
-    function _executeRequest(Order memory _order, UpdatePositionRequest memory _request) internal {
+    function _executeRequest(uint256 _orderId, Order memory _order, UpdatePositionRequest memory _request) internal {
         if (_request.updateType == UpdatePositionType.INCREASE) {
+            bool noSwap = orderVersions[_orderId] < ORDER_VERSION
+                || (_order.payToken == ETH && _order.collateralToken == address(weth))
+                || (_order.payToken == _order.collateralToken);
+
+            if (!noSwap) {
+                address fromToken = _order.payToken == ETH ? address(weth) : _order.payToken;
+                _request.collateral =
+                    _poolSwap(fromToken, _order.collateralToken, _request.collateral, 0, address(this), _order.owner);
+            }
+
             IERC20(_order.collateralToken).safeTransfer(address(_order.pool), _request.collateral);
             _order.pool.increasePosition(
                 _order.owner, _order.indexToken, _order.collateralToken, _request.sizeChange, _request.side
@@ -302,6 +336,13 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
                 collateralToken.safeTransfer(_order.owner, payoutAmount);
             }
         }
+    }
+
+    // ========= INTERNAL FUCNTIONS ==========
+
+    function _getMarkPrice(Order memory order, UpdatePositionRequest memory request) internal view returns (uint256) {
+        bool max = (request.updateType == UpdatePositionType.INCREASE) == (request.side == Side.LONG);
+        return oracle.getPrice(order.indexToken, max);
     }
 
     function _createDecreasePositionOrder(
@@ -336,6 +377,7 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
         order.expiresAt = _orderType == OrderType.MARKET ? block.timestamp + MARKET_ORDER_TIMEOUT : 0;
         order.submissionBlock = block.number;
         order.executionFee = msg.value;
+        uint256 minExecutionFee = _calcMinPerpetualExecutionFee(order.collateralToken, order.payToken);
         require(order.executionFee >= minExecutionFee, "OrderManager:executionFeeTooLow");
 
         request.updateType = UpdatePositionType.DECREASE;
@@ -352,6 +394,13 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
         emit OrderPlaced(orderId, order, request);
     }
 
+    /// @param _data encoded order metadata, include:
+    /// uint256 price trigger price of index token
+    /// address payToken address the token user used to pay
+    /// uint256 purchaseAmount amount user willing to pay
+    /// uint256 sizeChanged size of position to open/increase
+    /// uint256 collateral amount of collateral token or pay token
+    /// bytes extradata some extradata past to hooks, data format described in hook
     function _createIncreasePositionOrder(
         Side _side,
         address _indexToken,
@@ -362,14 +411,13 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
         Order memory order;
         UpdatePositionRequest memory request;
         order.triggerAboveThreshold = _side == Side.SHORT;
-        address purchaseToken;
         uint256 purchaseAmount;
         bytes memory extradata;
-        (order.price, purchaseToken, purchaseAmount, request.sizeChange, request.collateral, extradata) =
+        (order.price, order.payToken, purchaseAmount, request.sizeChange, request.collateral, extradata) =
             abi.decode(_data, (uint256, address, uint256, uint256, uint256, bytes));
 
         require(purchaseAmount != 0, "OrderManager:invalidPurchaseAmount");
-        require(purchaseToken != address(0), "OrderManager:invalidPurchaseToken");
+        require(order.payToken != address(0), "OrderManager:invalidPurchaseToken");
 
         order.pool = pool;
         order.owner = msg.sender;
@@ -377,26 +425,24 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
         order.collateralToken = _collateralToken;
         order.expiresAt = _orderType == OrderType.MARKET ? block.timestamp + MARKET_ORDER_TIMEOUT : 0;
         order.submissionBlock = block.number;
-        order.executionFee = purchaseToken == ETH ? msg.value - purchaseAmount : msg.value;
+        order.executionFee = order.payToken == ETH ? msg.value - purchaseAmount : msg.value;
+
+        uint256 minExecutionFee = _calcMinPerpetualExecutionFee(order.collateralToken, order.payToken);
         require(order.executionFee >= minExecutionFee, "OrderManager:executionFeeTooLow");
         request.updateType = UpdatePositionType.INCREASE;
         request.side = _side;
+        request.collateral = purchaseAmount;
+
         orderId = nextOrderId;
         nextOrderId = orderId + 1;
         orders[orderId] = order;
         requests[orderId] = request;
+        orderVersions[orderId] = ORDER_VERSION;
 
-        // swap or wrap if needed
-        if (purchaseToken == ETH && _collateralToken == address(weth)) {
-            require(purchaseAmount == request.collateral, "OrderManager:invalidPurchaseAmount");
+        if (order.payToken == ETH) {
             weth.deposit{value: purchaseAmount}();
-        } else if (purchaseToken != _collateralToken) {
-            // update request collateral value to the actual swap output
-            requests[orderId].collateral = _poolSwap(
-                purchaseToken, _collateralToken, purchaseAmount, request.collateral, address(this), order.owner
-            );
-        } else if (purchaseToken != ETH) {
-            IERC20(purchaseToken).safeTransferFrom(msg.sender, address(this), request.collateral);
+        } else {
+            IERC20(order.payToken).safeTransferFrom(msg.sender, address(this), request.collateral);
         }
 
         if (address(orderHook) != address(0)) {
@@ -414,14 +460,7 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
         address _receiver,
         address _beneficier
     ) internal returns (uint256 amountOut) {
-        address payToken;
-        (payToken, _fromToken) = _fromToken == ETH ? (ETH, address(weth)) : (_fromToken, _fromToken);
-        if (payToken == ETH) {
-            weth.deposit{value: _amountIn}();
-            weth.safeTransfer(address(pool), _amountIn);
-        } else {
-            IERC20(_fromToken).safeTransferFrom(msg.sender, address(pool), _amountIn);
-        }
+        IERC20(_fromToken).safeTransfer(address(pool), _amountIn);
         return _doSwap(_fromToken, _toToken, _minAmountOut, _receiver, _beneficier);
     }
 
@@ -446,15 +485,16 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
 
         _safeTransferETH(_order.owner, _order.executionFee);
         if (request.updateType == UpdatePositionType.INCREASE) {
-            _refundCollateral(_order.collateralToken, request.collateral, _order.owner);
+            address refundToken = orderVersions[_orderId] == ORDER_VERSION ? _order.payToken : _order.collateralToken;
+            _refundCollateral(refundToken, request.collateral, _order.owner);
         }
     }
 
-    function _refundCollateral(address _collateralToken, uint256 _amount, address _orderOwner) internal {
-        if (_collateralToken == address(weth)) {
+    function _refundCollateral(address _refundToken, uint256 _amount, address _orderOwner) internal {
+        if (_refundToken == address(weth) || _refundToken == ETH) {
             _safeUnwrapETH(_amount, _orderOwner);
         } else {
-            IERC20(_collateralToken).safeTransfer(_orderOwner, _amount);
+            IERC20(_refundToken).safeTransfer(_orderOwner, _amount);
         }
     }
 
@@ -473,6 +513,26 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
         require(_sender == executor, "OrderManager:onlyExecutor");
     }
 
+    function _calcMinPerpetualExecutionFee(address _collateralToken, address _payToken)
+        internal
+        view
+        returns (uint256)
+    {
+        bool noSwap = _collateralToken == _payToken || (_collateralToken == address(weth) && _payToken == ETH);
+        return noSwap ? minPerpetualExecutionFee : minPerpetualExecutionFee + minSwapExecutionFee;
+    }
+
+    function _setMinExecutionFee(uint256 _perpExecutionFee, uint256 _swapExecutionFee) internal {
+        require(_perpExecutionFee != 0, "OrderManager:invalidFeeValue");
+        require(_perpExecutionFee <= MAX_MIN_EXECUTION_FEE, "OrderManager:minExecutionFeeTooHigh");
+        require(_swapExecutionFee != 0, "OrderManager:invalidFeeValue");
+        require(_swapExecutionFee <= MAX_MIN_EXECUTION_FEE, "OrderManager:minExecutionFeeTooHigh");
+        minPerpetualExecutionFee = _perpExecutionFee;
+        minSwapExecutionFee = _swapExecutionFee;
+        emit MinExecutionFeeSet(_perpExecutionFee);
+        emit MinSwapExecutionFeeSet(_swapExecutionFee);
+    }
+
     // ============ Administrative =============
 
     function setOracle(address _oracle) external onlyOwner {
@@ -488,11 +548,8 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
         emit PoolSet(_pool);
     }
 
-    function setMinExecutionFee(uint256 _fee) external onlyOwner {
-        require(_fee != 0, "OrderManager:invalidFeeValue");
-        require(_fee <= MAX_MIN_EXECUTION_FEE, "OrderManager:minExecutionFeeTooHigh");
-        minExecutionFee = _fee;
-        emit MinExecutionFeeSet(_fee);
+    function setMinExecutionFee(uint256 _perpExecutionFee, uint256 _swapExecutionFee) external onlyOwner {
+        _setMinExecutionFee(_perpExecutionFee, _swapExecutionFee);
     }
 
     function setOrderHook(address _hook) external onlyOwner {
@@ -525,7 +582,8 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
         uint256 amountOut
     );
     event PoolSet(address indexed pool);
-    event MinExecutionFeeSet(uint256 fee);
+    event MinExecutionFeeSet(uint256 perpetualFee); // keep this event signature unchanged
+    event MinSwapExecutionFeeSet(uint256 swapExecutionFee);
     event OrderHookSet(address indexed hook);
     event ExecutorSet(address indexed executor);
 }
