@@ -45,6 +45,6 @@ library PositionUtils {
         int256 nextSize = int256(_nextSize);
         int256 divisor = _side == Side.LONG ? nextSize + pnl : nextSize - pnl;
         // require(avgPrice > 0);
-        return divisor < 0 ? 0 : uint256(nextSize * int256(_nextPrice) / divisor);
+        return divisor <= 0 ? 0 : _nextSize * _nextPrice / uint256(divisor);
     }
 }
