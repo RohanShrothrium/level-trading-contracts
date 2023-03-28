@@ -789,30 +789,6 @@ contract PoolWithFee is PoolTestFixture {
     }
 
     /**
-     * title: Owner control maintenance margin.
-     * expect: Not revert.
-     * recommend: No.
-     */
-    function test_set_maintenance_margin() external {
-        // OnlyOwner
-        {
-            vm.expectRevert("Ownable: caller is not the owner");
-            pool.setMaintenanceMargin(0);
-        }
-        vm.startPrank(owner);
-        // ValueTooHigh
-        {
-            vm.expectRevert();
-            pool.setMaintenanceMargin(type(uint256).max);
-        }
-        // Success
-        {
-            pool.setMaintenanceMargin(4e8);
-            assertEq(pool.maintenanceMargin(), 4e8); // 4%
-        }
-    }
-
-    /**
      * title: Owner control oracle.
      * expect: Not revert.
      * recommend: No.

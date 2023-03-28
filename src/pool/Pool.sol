@@ -32,6 +32,7 @@ import {
 } from "./PoolStorage.sol";
 import {PoolErrors} from "./PoolErrors.sol";
 import {IPoolHook} from "../interfaces/IPoolHook.sol";
+import {SafeCast} from "openzeppelin/utils/math/SafeCast.sol";
 
 uint256 constant USD_VALUE_DECIMAL = 30;
 
@@ -75,6 +76,8 @@ struct DecreasePositionVars {
 contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, PoolStorage, IPool {
     using SignedIntOps for int256;
     using SafeERC20 for IERC20;
+    using SafeCast for uint256;
+    using SafeCast for int256;
 
     /* =========== MODIFIERS ========== */
     modifier onlyOrderManager() {
@@ -441,7 +444,7 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
 
     function setRiskFactor(address _token, RiskConfig[] memory _config) external onlyOwner onlyAsset(_token) {
         if (isStableCoin[_token]) {
-            revert PoolErrors.CannotSetRiskFactorForStableCoin(_token);
+            revert PoolErrors.NotApplicableForStableCoin();
         }
         uint256 total = totalRiskFactor[_token];
         for (uint256 i = 0; i < _config.length; ++i) {
@@ -564,11 +567,12 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
     }
 
     function setTargetWeight(TokenWeight[] memory tokens) external onlyOwner {
-        if (tokens.length != allAssets.length) {
+        uint nTokens = tokens.length;
+        if (nTokens != allAssets.length) {
             revert PoolErrors.RequireAllTokens();
         }
         uint256 total;
-        for (uint256 i = 0; i < tokens.length; ++i) {
+        for (uint256 i = 0; i < nTokens; ++i) {
             TokenWeight memory item = tokens[i];
             assert(isAsset[item.token]);
             // unlisted token always has zero weight
@@ -903,7 +907,7 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
             AssetInfo memory asset = trancheAssets[_tranche][token];
             uint256 price = prices[i];
             if (isStableCoin[token]) {
-                aum = aum + int256(price * asset.poolAmount);
+                aum = aum + (price * asset.poolAmount).toInt256();
             } else {
                 aum = aum + _calcManagedValue(_tranche, token, asset, price);
             }
@@ -913,7 +917,7 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
         }
 
         // aum MUST not be negative. If it is, please debug
-        return aum.toUint();
+        return aum.toUint256();
     }
 
     function _calcManagedValue(address _tranche, address _token, AssetInfo memory _asset, uint256 _price)
@@ -923,8 +927,7 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
     {
         uint256 averageShortPrice = averageShortPrices[_tranche][_token];
         int256 shortPnl = PositionUtils.calcPnl(Side.SHORT, _asset.totalShortSize, averageShortPrice, _price);
-        return int256(_asset.poolAmount - _asset.reservedAmount) * int256(_price) + int256(_asset.guaranteedValue)
-            - shortPnl;
+        return ((_asset.poolAmount - _asset.reservedAmount) * _price + _asset.guaranteedValue).toInt256() - shortPnl;
     }
 
     function _decreaseTranchePoolAmount(address _tranche, address _token, uint256 _amount, uint256 _assetPrice)
@@ -1097,8 +1100,9 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
 
             uint256 lpFee =
                 MathUtils.frac(_vars.totalLpFee, riskFactor[_indexToken][tranche], totalRiskFactor[_indexToken]);
-            collateral.poolAmount =
-                (int256(collateral.poolAmount + lpFee) - _vars.poolAmountReduced.frac(share, totalShare)).toUint();
+            collateral.poolAmount = (
+                (collateral.poolAmount + lpFee).toInt256() - _vars.poolAmountReduced.frac(share, totalShare)
+            ).toUint256();
 
             int256 pnl = _vars.pnl.frac(share, totalShare);
             if (_side == Side.LONG) {
@@ -1211,7 +1215,7 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
         // calculate fee needed when close position
         uint256 feeValue = _calcPositionFee(_position, _position.size, _borrowIndex);
         int256 pnl = PositionUtils.calcPnl(_side, _position.size, _position.entryPrice, _indexPrice);
-        int256 collateral = pnl + int256(_position.collateralValue);
+        int256 collateral = pnl + _position.collateralValue.toInt256();
 
         // liquidation occur when collateral cannot cover margin fee or lower than maintenance margin
         return collateral < 0 || uint256(collateral) * PRECISION < _position.size * maintenanceMargin
@@ -1242,17 +1246,18 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
         vars.feeValue = _calcPositionFee(_position, vars.sizeChanged, poolTokens[_collateralToken].borrowIndex);
 
         // first try to deduct fee and lost (if any) from withdrawn collateral
-        int256 payoutValue = vars.pnl + int256(vars.collateralReduced) - int256(vars.feeValue);
+        int256 payoutValue = vars.pnl + vars.collateralReduced.toInt256() - vars.feeValue.toInt256();
         if (isLiquidate) {
-            payoutValue = payoutValue - int256(fee.liquidationFee);
+            payoutValue = payoutValue - fee.liquidationFee.toInt256();
         }
-        int256 remainingCollateral = int256(_position.collateralValue - vars.collateralReduced);
+        int256 remainingCollateral = (_position.collateralValue - vars.collateralReduced).toInt256(); // subtraction never overflow, checked above
         // if the deduction is too much, try to deduct from remaining collateral
         if (payoutValue < 0) {
             remainingCollateral = remainingCollateral + payoutValue;
             payoutValue = 0;
         }
-        vars.payout = uint256(payoutValue / int256(vars.collateralPrice));
+        int256 collateralPrice = vars.collateralPrice.toInt256();
+        vars.payout = uint256(payoutValue / collateralPrice);
 
         int256 poolValueReduced = vars.pnl;
         if (remainingCollateral < 0) {
@@ -1267,14 +1272,14 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
         }
 
         if (_side == Side.LONG) {
-            poolValueReduced = poolValueReduced + int256(vars.collateralReduced);
+            poolValueReduced = poolValueReduced + vars.collateralReduced.toInt256();
         } else if (poolValueReduced < 0) {
             // in case of SHORT, trader can lost unlimited value but pool can only increase at most collateralValue - liquidationFee
-            int256 minReducedValue =
-                -int256(MathUtils.zeroCapSub(_position.collateralValue, vars.feeValue + fee.liquidationFee));
-            poolValueReduced = minReducedValue < poolValueReduced ? poolValueReduced : minReducedValue;
+            poolValueReduced = poolValueReduced.cap(
+                MathUtils.zeroCapSub(_position.collateralValue, vars.feeValue + fee.liquidationFee)
+            );
         }
-        vars.poolAmountReduced = poolValueReduced / int256(vars.collateralPrice);
+        vars.poolAmountReduced = poolValueReduced / collateralPrice;
         (vars.daoFee, vars.totalLpFee) = _calcDaoFee(vars.feeValue / vars.collateralPrice);
     }
 

@@ -2,6 +2,8 @@
 
 pragma solidity >=0.8.0;
 
+import {SafeCast} from "openzeppelin/utils/math/SafeCast.sol";
+
 uint256 constant POS = 1;
 uint256 constant NEG = 0;
 
@@ -14,8 +16,10 @@ struct SignedInt {
 }
 
 library SignedIntOps {
+    using SafeCast for uint256;
+
     function frac(int256 a, uint256 num, uint256 denom) internal pure returns (int256) {
-        return a * int256(num) / int256(denom);
+        return a * num.toInt256() / denom.toInt256();
     }
 
     function abs(int256 x) internal pure returns (uint256) {
@@ -26,8 +30,8 @@ library SignedIntOps {
         return SignedInt({abs: abs(x), sig: x < 0 ? NEG : POS});
     }
 
-    function toUint(int256 x) internal pure returns (uint256) {
-        require(x >= 0, "SignedInt: below zero");
-        return uint256(x);
+    function cap(int256 x, uint256 maxAbs) internal pure returns (int256) {
+        int256 min = -maxAbs.toInt256();
+        return x > min ? x : min;
     }
 }

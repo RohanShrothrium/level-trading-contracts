@@ -4,8 +4,10 @@ pragma solidity >=0.8.0;
 
 import {Side} from "../interfaces/IPool.sol";
 import {SignedInt, SignedIntOps} from "./SignedInt.sol";
+import {SafeCast} from "openzeppelin/utils/math/SafeCast.sol";
 
 library PositionUtils {
+    using SafeCast for uint256;
     using SignedIntOps for int256;
 
     function calcPnl(Side _side, uint256 _positionSize, uint256 _entryPrice, uint256 _indexPrice)
@@ -16,11 +18,13 @@ library PositionUtils {
         if (_positionSize == 0 || _entryPrice == 0) {
             return 0;
         }
-        int256 entryPrice = int256(_entryPrice);
+        int256 entryPrice = _entryPrice.toInt256();
+        int256 positionSize = _positionSize.toInt256();
+        int256 indexPrice = _indexPrice.toInt256();
         if (_side == Side.LONG) {
-            return (int256(_indexPrice) - entryPrice) * int256(_positionSize) / entryPrice;
+            return (indexPrice - entryPrice) * positionSize / entryPrice;
         } else {
-            return (entryPrice - int256(_indexPrice)) * int256(_positionSize) / entryPrice;
+            return (entryPrice - indexPrice) * positionSize / entryPrice;
         }
     }
 
@@ -42,9 +46,8 @@ library PositionUtils {
             return _nextPrice;
         }
         int256 pnl = calcPnl(_side, _lastSize, _entryPrice, _nextPrice) - _realizedPnL;
-        int256 nextSize = int256(_nextSize);
+        int256 nextSize = _nextSize.toInt256();
         int256 divisor = _side == Side.LONG ? nextSize + pnl : nextSize - pnl;
-        // require(avgPrice > 0);
         return divisor <= 0 ? 0 : _nextSize * _nextPrice / uint256(divisor);
     }
 }
