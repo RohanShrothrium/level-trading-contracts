@@ -52,7 +52,7 @@ struct IncreasePositionVars {
 struct DecreasePositionVars {
     /// @notice santinized input: collateral value able to be withdraw
     uint256 collateralReduced;
-    /// @notice santinized input: position size to decrease, caped to position's size
+    /// @notice santinized input: position size to decrease, capped to position's size
     uint256 sizeChanged;
     /// @notice current price of index
     uint256 indexPrice;
@@ -68,6 +68,7 @@ struct DecreasePositionVars {
     uint256 daoFee;
     /// @notice real transfer out amount to user
     uint256 payout;
+    /// @notice 'net' PnL (fee not counted)
     int256 pnl;
     int256 poolAmountReduced;
     uint256 totalLpFee;
@@ -169,7 +170,8 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
     {
         _validateTranche(_tranche);
         _accrueInterest(_token);
-        _amountIn = _requireAmount(_transferIn(_token, _amountIn));
+        IERC20(_token).safeTransferFrom(msg.sender, address(this), _amountIn);
+        _amountIn = _requireAmount(_getAmountIn(_token));
 
         (uint256 amountInAfterDaoFee, uint256 daoFee, uint256 lpAmount) = _calcAddLiquidity(_tranche, _token, _amountIn);
         if (lpAmount < _minLpAmount) {
@@ -665,17 +667,18 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
         }
         uint256 tokenPrice = _getPrice(_token, false);
         uint256 valueChange = _amountIn * tokenPrice;
-        uint256 _fee = _calcAddRemoveLPFee(_token, tokenPrice, valueChange, true);
+
+        uint256 _fee = _calcFeeRate(_token, tokenPrice, valueChange, addRemoveLiquidityFee, fee.taxBasisPoint, true);
         uint256 userAmount = MathUtils.frac(_amountIn, PRECISION - _fee, PRECISION);
         (daoFee,) = _calcDaoFee(_amountIn - userAmount);
         amountInAfterFee = _amountIn - daoFee;
 
-        uint256 poolValue = _getTrancheValue(_tranche, true);
+        uint256 trancheValue = _getTrancheValue(_tranche, true);
         uint256 lpSupply = ILPToken(_tranche).totalSupply();
-        if (lpSupply == 0 || poolValue == 0) {
+        if (lpSupply == 0 || trancheValue == 0) {
             lpAmount = MathUtils.frac(userAmount, tokenPrice, LP_INITIAL_PRICE);
         } else {
-            lpAmount = (userAmount * tokenPrice * lpSupply) / poolValue;
+            lpAmount = (userAmount * tokenPrice * lpSupply) / trancheValue;
         }
     }
 
@@ -688,15 +691,10 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
         uint256 poolValue = _getTrancheValue(_tranche, false);
         uint256 totalSupply = ILPToken(_tranche).totalSupply();
         uint256 valueChange = (_lpAmount * poolValue) / totalSupply;
-        uint256 _fee = _calcAddRemoveLPFee(_tokenOut, tokenPrice, valueChange, false);
+        uint256 _fee = _calcFeeRate(_tokenOut, tokenPrice, valueChange, addRemoveLiquidityFee, fee.taxBasisPoint, false);
         outAmount = (_lpAmount * poolValue) / totalSupply / tokenPrice;
         outAmountAfterFee = MathUtils.frac(outAmount, PRECISION - _fee, PRECISION);
         (daoFee,) = _calcDaoFee(outAmount - outAmountAfterFee);
-    }
-
-    function _transferIn(address _token, uint256 _amount) internal returns (uint256) {
-        IERC20(_token).safeTransferFrom(msg.sender, address(this), _amount);
-        return _getAmountIn(_token);
     }
 
     function _calcSwapOutput(address _tokenIn, address _tokenOut, uint256 _amountIn)
@@ -846,14 +844,6 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
         return _calcFeeRate(_token, _tokenPrice, _valueChange, baseSwapFee, taxBasisPoint, _isSwapIn);
     }
 
-    function _calcAddRemoveLPFee(address _token, uint256 _tokenPrice, uint256 _valueChange, bool _isAdd)
-        internal
-        view
-        returns (uint256)
-    {
-        return _calcFeeRate(_token, _tokenPrice, _valueChange, addRemoveLiquidityFee, fee.taxBasisPoint, _isAdd);
-    }
-
     function _calcFeeRate(
         address _token,
         uint256 _tokenPrice,
@@ -909,7 +899,9 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
             if (isStableCoin[token]) {
                 aum = aum + (price * asset.poolAmount).toInt256();
             } else {
-                aum = aum + _calcManagedValue(_tranche, token, asset, price);
+                uint256 averageShortPrice = averageShortPrices[_tranche][token];
+                int256 shortPnl = PositionUtils.calcPnl(Side.SHORT, asset.totalShortSize, averageShortPrice, price);
+                aum = aum + ((asset.poolAmount - asset.reservedAmount) * price + asset.guaranteedValue).toInt256() - shortPnl;
             }
             unchecked {
                 ++i;
@@ -918,16 +910,6 @@ contract Pool is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable, 
 
         // aum MUST not be negative. If it is, please debug
         return aum.toUint256();
-    }
-
-    function _calcManagedValue(address _tranche, address _token, AssetInfo memory _asset, uint256 _price)
-        internal
-        view
-        returns (int256)
-    {
-        uint256 averageShortPrice = averageShortPrices[_tranche][_token];
-        int256 shortPnl = PositionUtils.calcPnl(Side.SHORT, _asset.totalShortSize, averageShortPrice, _price);
-        return ((_asset.poolAmount - _asset.reservedAmount) * _price + _asset.guaranteedValue).toInt256() - shortPnl;
     }
 
     function _decreaseTranchePoolAmount(address _tranche, address _token, uint256 _amount, uint256 _assetPrice)

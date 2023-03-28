@@ -38,10 +38,7 @@ contract LiquidityRouter {
         pool.addLiquidity(_tranche, _token, _amountIn, _minLpAmount, _to);
     }
 
-    function removeLiquidityETH(address _tranche, uint256 _lpAmount, uint256 _minOut, address payable _to)
-        external
-        payable
-    {
+    function removeLiquidityETH(address _tranche, uint256 _lpAmount, uint256 _minOut, address payable _to) external {
         IERC20 lpToken = IERC20(_tranche);
         lpToken.safeTransferFrom(msg.sender, address(this), _lpAmount);
         lpToken.safeIncreaseAllowance(address(pool), _lpAmount);
