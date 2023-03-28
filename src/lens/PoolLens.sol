@@ -7,6 +7,7 @@ import {Side, IPool} from "../interfaces/IPool.sol";
 import {SignedIntOps} from "../lib/SignedInt.sol";
 import {PositionUtils} from "../lib/PositionUtils.sol";
 import {ILevelOracle} from "../interfaces/ILevelOracle.sol";
+import {SafeCast} from "openzeppelin/utils/math/SafeCast.sol";
 
 struct PositionView {
     bytes32 key;
@@ -48,6 +49,8 @@ interface IPoolForLens is IPool {
 
 contract PoolLens {
     using SignedIntOps for int256;
+    using SafeCast for uint256;
+    using SafeCast for int256;
 
     function poolAssets(address _pool, address _token) external view returns (PoolAsset memory poolAsset) {
         IPoolForLens self = IPoolForLens(_pool);
@@ -151,8 +154,8 @@ contract PoolLens {
         } else {
             uint256 averageShortPrice = _pool.averageShortPrices(_tranche, _token);
             int256 shortPnl = PositionUtils.calcPnl(Side.SHORT, totalShortSize, averageShortPrice, price);
-            int256 aum = int256(poolAmount - reservedAmount) * int256(price) + int256(guaranteedValue);
-            return uint256(aum - shortPnl);
+            int256 aum = ((poolAmount - reservedAmount) * price + guaranteedValue).toInt256() - shortPnl;
+            return aum.toUint256();
         }
     }
 
@@ -167,15 +170,15 @@ contract PoolLens {
             address _tranche = _pool.allTranches(i);
             AssetInfo memory asset = _pool.trancheAssets(_tranche, _token);
             if (isStable) {
-                sum = sum + int256(asset.poolAmount * price);
+                sum = sum + (asset.poolAmount * price).toInt256();
             } else {
                 uint256 averageShortPrice = _pool.averageShortPrices(_tranche, _token);
                 int256 shortPnl = PositionUtils.calcPnl(Side.SHORT, asset.totalShortSize, averageShortPrice, price);
-                sum = int256(asset.poolAmount - asset.reservedAmount) * int256(price) + int256(asset.guaranteedValue)
+                sum = ((asset.poolAmount - asset.reservedAmount) * price + asset.guaranteedValue).toInt256()
                     + sum - shortPnl;
             }
         }
 
-        return uint256(sum);
+        return sum.toUint256();
     }
 }
