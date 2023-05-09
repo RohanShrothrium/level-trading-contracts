@@ -277,9 +277,34 @@ contract OrderManagerTest is PoolTestFixture {
         orders.executeOrder(0, payable(alice));
 
         vm.stopPrank();
-        vm.startPrank(owner);
-        vm.expectRevert("OrderManager:onlyExecutor");
-        orders.executeOrder(1, payable(owner));
+        vm.startPrank(bob);
+        vm.expectRevert("OrderManager:onlyOwnerOrExecutor");
+        orders.executeOrder(1, payable(bob));
+        vm.stopPrank();
+        vm.startPrank(alice);
+        orders.executeOrder(1, payable(alice));
+    }
+
+    function test_owner_can_execute() external {
+        init();
+        addLiquidity();
+        vm.startPrank(alice);
+        btc.approve(address(orders), type(uint256).max);
+        vm.roll(1);
+        uint256 balanceBefore = btc.balanceOf(alice);
+        vm.warp(0);
+        orders.placeOrder{value: 1e17}(
+            UpdatePositionType.INCREASE,
+            Side.LONG,
+            address(btc),
+            address(btc),
+            OrderType.MARKET,
+            abi.encode(20_000e22, address(btc), 1e7, 2000e30, 1e7, bytes(""))
+        );
+        assertEq(btc.balanceOf(address(orders)), 1e7);
+        vm.roll(2);
+        assertEq(btc.balanceOf(address(alice)), balanceBefore - 1e7);
+
         vm.stopPrank();
         vm.startPrank(alice);
         orders.executeOrder(1, payable(alice));

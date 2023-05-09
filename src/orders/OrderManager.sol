@@ -75,11 +75,6 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
     mapping(uint256 => uint256) public orderVersions;
     uint256 public minSwapExecutionFee;
 
-    modifier onlyExecutor() {
-        _validateExecutor(msg.sender);
-        _;
-    }
-
     constructor() {
         _disableInitializers();
     }
@@ -230,9 +225,9 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
         emit Swap(msg.sender, _fromToken, _toToken, address(pool), _amountIn, amountOut);
     }
 
-    function executeOrder(uint256 _orderId, address payable _feeTo) external nonReentrant onlyExecutor {
+    function executeOrder(uint256 _orderId, address payable _feeTo) external nonReentrant {
         Order memory order = orders[_orderId];
-        require(order.owner != address(0), "OrderManager:orderNotExists");
+        _validateExecution(order.owner);
         require(order.pool == pool, "OrderManager:invalidOrPausedPool");
         require(block.number > order.submissionBlock, "OrderManager:blockNotPass");
 
@@ -281,8 +276,9 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
         emit SwapOrderCancelled(_orderId);
     }
 
-    function executeSwapOrder(uint256 _orderId, address payable _feeTo) external nonReentrant onlyExecutor {
+    function executeSwapOrder(uint256 _orderId, address payable _feeTo) external nonReentrant {
         SwapOrder memory order = swapOrders[_orderId];
+        _validateExecution(order.owner);
         require(order.owner != address(0), "OrderManager:notFound");
         delete swapOrders[_orderId];
         IERC20(order.tokenIn).safeTransfer(address(order.pool), order.amountIn);
@@ -509,8 +505,11 @@ contract OrderManager is Initializable, OwnableUpgradeable, ReentrancyGuardUpgra
         ethUnwrapper.unwrap(_amount, _to);
     }
 
-    function _validateExecutor(address _sender) internal view {
-        require(_sender == executor, "OrderManager:onlyExecutor");
+    function _validateExecution(address _owner) internal view {
+        require(_owner != address(0), "OrderManager:orderNotExists");
+
+        // only the cerator or the executor can execute the order
+        require(msg.sender == executor || msg.sender == _owner, "OrderManager:onlyOwnerOrExecutor");
     }
 
     function _calcMinPerpetualExecutionFee(address _collateralToken, address _payToken)
